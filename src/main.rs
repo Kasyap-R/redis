@@ -12,12 +12,19 @@ fn main() {
         match stream {
             Ok(mut stream) => {
                 println!("accepted new connection");
-                /* let mut buf = [0; 512];
-                stream.read(&mut buf).unwrap(); */
-                stream.write(b"+PONG\r\n").unwrap();
+                let mut buf = [0; 512];
+                loop {
+                    // read_count is the num of bytes sent
+                    let num_bytes = stream.read(&mut buf).unwrap();
+                    if num_bytes == 0 {
+                        break;
+                    }
+                    stream.write(b"+PONG\r\n").unwrap();
+                }
             }
             Err(e) => {
                 println!("error: {}", e);
+                break;
             }
         }
     }
