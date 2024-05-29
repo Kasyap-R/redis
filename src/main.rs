@@ -85,8 +85,16 @@ async fn handle_conn(mut stream: TcpStream, config: Arc<Config>) {
                     let _ = stream.write_all(response.as_bytes()).await;
                 }
                 Command::Info(_arg) => {
-                    println!("Processing InfO");
-                    let response = serialize_to_bulk_string(format!("role:{}", config.role));
+                    let response = match config.role.as_str() {
+                        "master" => serialize_to_bulk_string(format!(
+                            "role:{}\nmaster_replid:{}\nmaster_repl_offset:{}\n",
+                            config.role,
+                            config.master_replid.as_ref().unwrap(),
+                            config.master_repl_offset.as_ref().unwrap()
+                        )),
+                        "slave" => serialize_to_bulk_string(format!("role:{}", config.role)),
+                        _ => panic!("Redis instance must be either slave or master"),
+                    };
                     let _ = stream.write_all(response.as_bytes()).await;
                 }
                 _ => panic!("Unsupported Command"),

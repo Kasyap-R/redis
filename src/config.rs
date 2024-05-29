@@ -3,6 +3,8 @@ use std::env;
 pub struct Config {
     pub port: String,
     pub role: String,
+    pub master_replid: Option<String>,
+    pub master_repl_offset: Option<String>,
 }
 
 impl Config {
@@ -11,6 +13,8 @@ impl Config {
         let mut config = Config {
             port: String::from("6379"),
             role: String::from("master"),
+            master_replid: None,
+            master_repl_offset: None,
         };
         let mut index = 0;
         while index < args.len() {
@@ -34,6 +38,10 @@ impl Config {
                 _ => {}
             }
             index += 1; // Move to the next argument
+        }
+        if config.role == "master" {
+            config.master_replid = Some(String::from("8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"));
+            config.master_repl_offset = Some(String::from("0"));
         }
         config
     }
