@@ -6,9 +6,9 @@ use tokio::task;
 use tokio::time::{sleep, Duration};
 
 pub mod config;
-pub mod resp_parser;
+pub mod resp;
 use crate::config::*;
-use crate::resp_parser::*;
+use crate::resp::resp_parser::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<(dyn std::error::Error + 'static)>> {
@@ -80,6 +80,11 @@ async fn handle_conn(mut stream: TcpStream) {
                             None => String::from("$-1\r\n"),
                         }
                     };
+                    let _ = stream.write_all(response.as_bytes()).await;
+                }
+                Command::Info(_arg) => {
+                    println!("Processing InfO");
+                    let response = String::from("$11\r\nrole:master\r\n");
                     let _ = stream.write_all(response.as_bytes()).await;
                 }
                 _ => panic!("Unsupported Command"),

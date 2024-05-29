@@ -1,20 +1,10 @@
-use std::fmt;
-
 #[derive(Debug)]
 pub enum Command {
     Ping,
     Echo(String),
     Set(String, String, Option<u64>),
     Get(String),
-}
-
-impl fmt::Display for Command {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Command::Echo(x) => write!(f, "Echo Command containing {}", x),
-            _ => write!(f, "Displaying this command is unsupported"),
-        }
-    }
+    Info(String),
 }
 
 impl Command {
@@ -80,6 +70,16 @@ impl Command {
                 Command::Ping
             }
             "set" => Command::handle_set(args),
+            "info" => {
+                if len_args != 1 {
+                    panic!("Inappropriate Number of arguments for the SET command");
+                }
+                match &args[0] {
+                    RespType::SimpleString(x) => Command::Info(x.to_string()),
+                    RespType::BulkString(x) => Command::Info(String::from(x.as_ref().unwrap())),
+                    _ => panic!("Argument for INFO needs to be a string"),
+                }
+            }
             "get" => {
                 if len_args != 1 {
                     panic!("Inappropriate Number of arguments for the SET command");
@@ -87,14 +87,16 @@ impl Command {
                 match &args[0] {
                     RespType::SimpleString(x) => Command::Get(x.to_string()),
                     RespType::BulkString(x) => Command::Get(String::from(x.as_ref().unwrap())),
-                    _ => panic!("Arguments for GET need to be strings"),
+                    _ => panic!("Argument for GET needs to be a string"),
                 }
             }
+
             other @ _ => panic!("No support for command type: {}", other),
         }
     }
 }
 
+#[derive(Debug)]
 enum RespType {
     Integer(i64),
     SimpleString(String),
@@ -141,7 +143,7 @@ impl RespParser {
 
     // Determine the command, and parse the num of arguments
     pub fn parse_command(&mut self) -> Command {
-        let command_data = self.process_bulk_string();
+        let command_name = self.process_bulk_string();
         let mut data: Vec<RespType> = Vec::new();
         for _ in 0..self.num_args {
             if self.index >= self.length {
@@ -153,7 +155,7 @@ impl RespParser {
                 _ => panic!("Unsupported RESP data type encountered"),
             }
         }
-        let command = match command_data {
+        let command = match command_name {
             RespType::BulkString(x) => Command::string_to_command(x.unwrap(), data),
             RespType::SimpleString(x) => Command::string_to_command(x, data),
             _ => panic!("Expected string following initial array"),
