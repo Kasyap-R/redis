@@ -15,16 +15,17 @@ async fn main() -> Result<(), Box<(dyn std::error::Error + 'static)>> {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
 
-    let config = Config::parse();
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", config.port)).await?;
+    let config = Arc::new(Config::parse());
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", &config.port)).await?;
 
     loop {
         let (stream, _) = listener.accept().await?;
-        handle_conn(stream).await;
+        let config = Arc::clone(&config);
+        handle_conn(stream, config).await;
     }
 }
 
-async fn handle_conn(mut stream: TcpStream) {
+async fn handle_conn(mut stream: TcpStream, config: Arc<Config>) {
     let database: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
     task::spawn(async move {
         let mut buf = [0; 512];
@@ -84,7 +85,7 @@ async fn handle_conn(mut stream: TcpStream) {
                 }
                 Command::Info(_arg) => {
                     println!("Processing InfO");
-                    let response = String::from("$11\r\nrole:master\r\n");
+                    let response = String::from(&format!("$11\r\nrole:{}\r\n", config.role));
                     let _ = stream.write_all(response.as_bytes()).await;
                 }
                 _ => panic!("Unsupported Command"),
