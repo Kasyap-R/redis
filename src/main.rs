@@ -11,16 +11,42 @@ use crate::config::*;
 use crate::resp::resp_parser::*;
 use crate::resp::resp_serializer::*;
 
+async fn send_and_recieve(
+    stream: &mut TcpStream,
+    message: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    // Write the message to the stream
+    stream.write_all(message.as_bytes()).await?;
+    stream.flush().await?;
+
+    // Buffer to store the response
+    let mut buf = [0; 1024];
+    let n = stream.read(&mut buf).await?;
+
+    // Convert the response to a String
+    let response = String::from_utf8_lossy(&buf[..n]).to_string();
+    Ok(response)
+}
+
 async fn perform_handshake(config: &Arc<Config>) {
     use crate::resp::RespType;
     if config.is_master() {
         return;
     }
-    println!("{}", config.master_port.as_ref().unwrap());
-    println!("{}", config.master_host.as_ref().unwrap());
-    let handshake: RespType =
-        RespType::Array(vec![RespType::BulkString(Some(String::from("PING")))]);
-    let serialized_handshake = serialize_resp_data(handshake);
+    let ping: RespType = RespType::Array(vec![RespType::BulkString(Some(String::from("PING")))]);
+    let repl_port = RespType::Array(vec![
+        RespType::BulkString(Some(String::from("REPLCONF"))),
+        RespType::BulkString(Some(String::from("listening-port"))),
+        RespType::BulkString(Some(String::from(&format!("{}", config.port)))),
+    ]);
+    let repl_capa = RespType::Array(vec![
+        RespType::BulkString(Some(String::from("REPLCONF"))),
+        RespType::BulkString(Some(String::from("capa"))),
+        RespType::BulkString(Some(String::from("psync2"))),
+    ]);
+    let serialized_ping = serialize_resp_data(ping);
+    let serialized_repl_port = serialize_resp_data(repl_port);
+    let serialized_repl_capa = serialize_resp_data(repl_capa);
     let mut stream = match TcpStream::connect(format!(
         "{}:{}",
         config.master_host.as_ref().unwrap(),
@@ -31,8 +57,9 @@ async fn perform_handshake(config: &Arc<Config>) {
         Ok(x) => x,
         Err(e) => panic!("{}", e),
     };
-    let _ = stream.write_all(serialized_handshake.as_bytes()).await;
-    println!("{}", serialized_handshake);
+    let _ = send_and_recieve(&mut stream, &serialized_ping).await;
+    let _ = send_and_recieve(&mut stream, &serialized_repl_port).await;
+    let _ = send_and_recieve(&mut stream, &serialized_repl_capa).await;
 }
 
 #[tokio::main]
@@ -70,22 +97,16 @@ async fn handle_conn(mut stream: TcpStream, config: Arc<Config>) {
             let mut parser =
                 RespParser::new(String::from_utf8(buf.to_vec()).expect("Invalid UTF-8 sequence"));
             let command = parser.parse_command();
-            match command {
+            let response: String = match command {
                 Command::Echo(message) => {
-                    let mut response = "$".to_string();
-                    response.push_str(&format!("{}\r\n{}\r\n", message.len(), message));
-                    let _ = stream.write_all(response.as_bytes()).await;
+                    String::from(&format!("${}\r\n{}\r\n", message.len(), message))
                 }
-                Command::Ping => {
-                    let response = "+PONG\r\n".to_string();
-                    let _ = stream.write_all(response.as_bytes()).await;
-                }
+                Command::Ping => String::from("+PONG\r\n"),
                 Command::Set(key, value, expiry) => {
                     {
                         let mut db = database.lock().unwrap();
                         db.insert(key.clone(), value);
                     }
-                    let response = "+OK\r\n".to_string();
                     if let Some(delay_millis) = expiry {
                         let key_clone = key.clone();
                         let db_clone = Arc::clone(&database);
@@ -95,39 +116,34 @@ async fn handle_conn(mut stream: TcpStream, config: Arc<Config>) {
                             db.remove(&key_clone);
                         });
                     }
-
-                    let _ = stream.write_all(response.as_bytes()).await;
+                    String::from("+OK\r\n")
                 }
                 Command::Get(key) => {
-                    let response = {
-                        let db = database.lock().unwrap();
-                        match db.get(&key) {
-                            Some(y) => format!("${}\r\n{}\r\n", y.len(), y),
-                            None => String::from("$-1\r\n"),
-                        }
-                    };
-                    let _ = stream.write_all(response.as_bytes()).await;
+                    let db = database.lock().unwrap();
+                    match db.get(&key) {
+                        Some(y) => String::from(format!("${}\r\n{}\r\n", y.len(), y)),
+                        None => String::from("$-1\r\n"),
+                    }
                 }
-                Command::Info(_arg) => {
-                    let response = match config.role.as_str() {
-                        "master" => serialize_resp_data(resp::RespType::BulkString(
-                            format!(
-                                "role:{}\nmaster_replid:{}\nmaster_repl_offset:{}\n",
-                                config.role,
-                                config.master_replid.as_ref().unwrap(),
-                                config.master_repl_offset.as_ref().unwrap()
-                            )
-                            .into(),
-                        )),
-                        "slave" => serialize_resp_data(resp::RespType::BulkString(
-                            format!("role:{}", config.role).into(),
-                        )),
-                        _ => panic!("Redis instance must be either slave or master"),
-                    };
-                    let _ = stream.write_all(response.as_bytes()).await;
-                }
+                Command::Info(_arg) => match config.role.as_str() {
+                    "master" => serialize_resp_data(resp::RespType::BulkString(
+                        format!(
+                            "role:{}\nmaster_replid:{}\nmaster_repl_offset:{}\n",
+                            config.role,
+                            config.master_replid.as_ref().unwrap(),
+                            config.master_repl_offset.as_ref().unwrap()
+                        )
+                        .into(),
+                    )),
+                    "slave" => serialize_resp_data(resp::RespType::BulkString(
+                        format!("role:{}", config.role).into(),
+                    )),
+                    _ => panic!("Redis instance must be either slave or master"),
+                },
+                Command::ReplConf(arg1, arg2, arg3) => String::from("+OK\r\n"),
                 _ => panic!("Unsupported Command"),
             };
+            let _ = stream.write_all(response.as_bytes()).await;
         }
     });
 }

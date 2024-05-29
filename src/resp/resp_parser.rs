@@ -7,6 +7,7 @@ pub enum Command {
     Set(String, String, Option<u64>),
     Get(String),
     Info(String),
+    ReplConf(String, String, Option<String>),
 }
 
 impl Command {
@@ -53,6 +54,30 @@ impl Command {
             panic!("Inappropriate Number of arguments for the SET command");
         }
     }
+
+    fn handle_replconf(args: Vec<RespType>) -> Command {
+        let len_args = args.len();
+        let mut strings: Vec<String> = Vec::new();
+        if len_args != 3 {
+            panic!("Inappropriate Number of arguments for the REPLCONF command");
+        }
+        for (index, arg) in args.iter().take(3).enumerate() {
+            match arg {
+                RespType::BulkString(x) => {
+                    strings[index] = String::from(x.as_ref().unwrap());
+                }
+                RespType::SimpleString(x) => {
+                    strings[index] = String::from(x);
+                }
+                _ => panic!("Arguments for REPLCONF need to be strings"),
+            }
+        }
+        Command::ReplConf(
+            strings[0].clone(),
+            strings[1].clone(),
+            Some(strings[2].clone()),
+        )
+    }
     fn string_to_command(command: String, args: Vec<RespType>) -> Command {
         let len_args = args.len();
         match command.to_lowercase().as_str() {
@@ -92,6 +117,7 @@ impl Command {
                     _ => panic!("Argument for GET needs to be a string"),
                 }
             }
+            "replconf" => Command::handle_replconf(args),
 
             other @ _ => panic!("No support for command type: {}", other),
         }
