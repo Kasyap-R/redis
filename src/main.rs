@@ -5,7 +5,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task;
 use tokio::time::{sleep, Duration};
 
+pub mod config;
 pub mod resp_parser;
+use crate::config::*;
 use crate::resp_parser::*;
 
 #[tokio::main]
@@ -13,7 +15,8 @@ async fn main() -> Result<(), Box<(dyn std::error::Error + 'static)>> {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
 
-    let listener = TcpListener::bind("127.0.0.1:6379").await?;
+    let config = Config::parse();
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", config.port)).await?;
 
     loop {
         let (stream, _) = listener.accept().await?;
