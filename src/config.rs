@@ -25,7 +25,7 @@ impl Config {
                 }
                 "--replicaof" => {
                     if index + 1 < args.len() {
-                        config.role = args[index + 1].to_owned();
+                        config.role = String::from("slave");
                         index += 1; // Skip the next argument since it's the value for --port
                     } else {
                         panic!("Error: --replicaof requires a value");

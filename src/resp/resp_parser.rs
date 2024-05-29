@@ -1,3 +1,5 @@
+use super::RespType;
+
 #[derive(Debug)]
 pub enum Command {
     Ping,
@@ -94,15 +96,6 @@ impl Command {
             other @ _ => panic!("No support for command type: {}", other),
         }
     }
-}
-
-#[derive(Debug)]
-enum RespType {
-    Integer(i64),
-    SimpleString(String),
-    Error(String),
-    BulkString(Option<String>),
-    Array(Vec<RespType>),
 }
 
 pub struct RespParser {

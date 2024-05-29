@@ -9,6 +9,7 @@ pub mod config;
 pub mod resp;
 use crate::config::*;
 use crate::resp::resp_parser::*;
+use crate::resp::resp_serializer::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<(dyn std::error::Error + 'static)>> {
@@ -85,7 +86,7 @@ async fn handle_conn(mut stream: TcpStream, config: Arc<Config>) {
                 }
                 Command::Info(_arg) => {
                     println!("Processing InfO");
-                    let response = String::from(&format!("$11\r\nrole:{}\r\n", config.role));
+                    let response = serialize_to_bulk_string(format!("role:{}", config.role));
                     let _ = stream.write_all(response.as_bytes()).await;
                 }
                 _ => panic!("Unsupported Command"),
