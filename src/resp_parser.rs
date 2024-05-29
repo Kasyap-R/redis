@@ -5,12 +5,14 @@
 // I will define enums for each type
 // I will parse commands into of those enums
 
-use std::{fmt, marker::PhantomData};
+use std::fmt;
 
 #[derive(Debug)]
 pub enum Command {
     Ping,
     Echo(String),
+    Set(String, String),
+    Get(String),
 }
 
 impl fmt::Display for Command {
@@ -40,6 +42,34 @@ impl Command {
                     panic!("Inappropriate Number of arguments for the PING command");
                 }
                 Command::Ping
+            }
+            "set" => {
+                if len_args != 2 {
+                    panic!("Inappropriate Number of arguments for the SET command");
+                }
+                let mut strings: [String; 2] = Default::default();
+                for (index, arg) in args.iter().enumerate() {
+                    match arg {
+                        RespType::BulkString(x) => {
+                            strings[index] = String::from(x.as_ref().unwrap());
+                        }
+                        RespType::SimpleString(x) => {
+                            strings[index] = String::from(x);
+                        }
+                        _ => panic!("Arguments for SET need to be strings"),
+                    }
+                }
+                Command::Set(strings[0].clone(), strings[1].clone())
+            }
+            "get" => {
+                if len_args != 1 {
+                    panic!("Inappropriate Number of arguments for the SET command");
+                }
+                match &args[0] {
+                    RespType::SimpleString(x) => Command::Get(x.to_string()),
+                    RespType::BulkString(x) => Command::Get(String::from(x.as_ref().unwrap())),
+                    _ => panic!("Arguments for GET need to be strings"),
+                }
             }
             other @ _ => panic!("No support for command type: {}", other),
         }
@@ -150,7 +180,7 @@ impl RespParser {
         }
         let bulk_string = self.read_data_till_crlf().to_string();
         if bulk_string.len() as i32 != length {
-            panic!("Provided length for bulk string incorrect");
+            panic!("Provided length for bulk string is incorrect");
         }
         RespType::BulkString(Some(bulk_string))
     }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 // Uncomment this block to pass the first stage
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -12,14 +13,12 @@ fn main() {
 
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
 
-    /* let mut parser = RespParser::new(String::from("*2\r\n$4\r\nEcho\r\n$3\r\nhey\r\n"));
-    println!("{}", parser.parse_command()); */
-
     for stream in listener.incoming() {
         let _handle = thread::spawn(move || match stream {
             Ok(mut stream) => {
                 println!("accepted new connection");
                 let mut buf = [0; 512];
+                let mut database: HashMap<String, String> = HashMap::new();
                 loop {
                     let num_bytes = stream.read(&mut buf).unwrap();
                     if num_bytes == 0 {
@@ -41,6 +40,19 @@ fn main() {
                         }
                         Command::Ping => {
                             let response = "+PONG\r\n".to_string();
+                            stream.write(response.as_bytes()).unwrap();
+                        }
+                        Command::Set(x, y) => {
+                            database.insert(x, y);
+                            let response = "+OK\r\n".to_string();
+                            stream.write(response.as_bytes()).unwrap();
+                        }
+                        Command::Get(x) => {
+                            let mut response = "".to_string();
+                            match database.get(&x) {
+                                Some(y) => response.push_str(&format!("${}\r\n{}\r\n", y.len(), y)),
+                                None => response.push_str(&format!("$-1\r\n")),
+                            }
                             stream.write(response.as_bytes()).unwrap();
                         }
                         _ => panic!("Unsupported Command"),
