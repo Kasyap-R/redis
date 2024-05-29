@@ -44,9 +44,16 @@ async fn perform_handshake(config: &Arc<Config>) {
         RespType::BulkString(Some(String::from("capa"))),
         RespType::BulkString(Some(String::from("psync2"))),
     ]);
+    let psync = RespType::Array(vec![
+        RespType::BulkString(Some(String::from("PSYNC"))),
+        RespType::BulkString(Some(String::from("?"))),
+        RespType::BulkString(Some(String::from("-1"))),
+    ]);
+
     let serialized_ping = serialize_resp_data(ping);
     let serialized_repl_port = serialize_resp_data(repl_port);
     let serialized_repl_capa = serialize_resp_data(repl_capa);
+    let serialized_psync = serialize_resp_data(psync);
     let mut stream = match TcpStream::connect(format!(
         "{}:{}",
         config.master_host.as_ref().unwrap(),
@@ -60,6 +67,7 @@ async fn perform_handshake(config: &Arc<Config>) {
     let _ = send_and_recieve(&mut stream, &serialized_ping).await;
     let _ = send_and_recieve(&mut stream, &serialized_repl_port).await;
     let _ = send_and_recieve(&mut stream, &serialized_repl_capa).await;
+    let _ = send_and_recieve(&mut stream, &serialized_psync).await;
 }
 
 #[tokio::main]
@@ -140,7 +148,10 @@ async fn handle_conn(mut stream: TcpStream, config: Arc<Config>) {
                     )),
                     _ => panic!("Redis instance must be either slave or master"),
                 },
-                Command::ReplConf(arg1, arg2, arg3) => String::from("+OK\r\n"),
+                Command::ReplConf(_arg1, _arg2, _arg3) => String::from("+OK\r\n"),
+                Command::Psync(_replication_id, _offset) => {
+                    String::from("+FULLRESYNC <REPL_ID> 0\r\n")
+                }
                 _ => panic!("Unsupported Command"),
             };
             let _ = stream.write_all(response.as_bytes()).await;

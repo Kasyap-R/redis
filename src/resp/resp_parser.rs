@@ -8,6 +8,7 @@ pub enum Command {
     Get(String),
     Info(String),
     ReplConf(String, String, Option<String>),
+    Psync(String, String),
 }
 
 impl Command {
@@ -109,7 +110,7 @@ impl Command {
             }
             "get" => {
                 if len_args != 1 {
-                    panic!("Inappropriate Number of arguments for the SET command");
+                    panic!("Inappropriate Number of arguments for the GET command");
                 }
                 match &args[0] {
                     RespType::SimpleString(x) => Command::Get(x.to_string()),
@@ -118,6 +119,24 @@ impl Command {
                 }
             }
             "replconf" => Command::handle_replconf(args),
+            "psync" => {
+                if len_args != 2 {
+                    panic!("Inappropriate Number of arguments for the PSYNC command");
+                }
+                let mut strings: Vec<String> = Vec::new();
+                for (index, arg) in args.iter().take(2).enumerate() {
+                    match arg {
+                        RespType::BulkString(x) => {
+                            strings[index] = String::from(x.as_ref().unwrap());
+                        }
+                        RespType::SimpleString(x) => {
+                            strings[index] = String::from(x);
+                        }
+                        _ => panic!("Arguments for REPLCONF need to be strings"),
+                    }
+                }
+                Command::Psync(strings[0].clone(), strings[1].clone())
+            }
 
             other @ _ => panic!("No support for command type: {}", other),
         }
