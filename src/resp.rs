@@ -2,7 +2,7 @@ pub mod resp_parser;
 pub mod resp_serializer;
 
 #[derive(Debug)]
-enum RespType {
+pub enum RespType {
     Integer(i64),
     SimpleString(String),
     Error(String),

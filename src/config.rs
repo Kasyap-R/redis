@@ -5,6 +5,8 @@ pub struct Config {
     pub role: String,
     pub master_replid: Option<String>,
     pub master_repl_offset: Option<String>,
+    pub master_port: Option<String>,
+    pub master_host: Option<String>,
 }
 
 impl Config {
@@ -15,6 +17,8 @@ impl Config {
             role: String::from("master"),
             master_replid: None,
             master_repl_offset: None,
+            master_port: None,
+            master_host: None,
         };
         let mut index = 0;
         while index < args.len() {
@@ -29,6 +33,9 @@ impl Config {
                 }
                 "--replicaof" => {
                     if index + 1 < args.len() {
+                        let parts: Vec<&str> = args[index + 1].split(" ").collect();
+                        config.master_host = Some(parts[0].to_string());
+                        config.master_port = Some(parts[1].to_string());
                         config.role = String::from("slave");
                         index += 1; // Skip the next argument since it's the value for --port
                     } else {
@@ -44,5 +51,8 @@ impl Config {
             config.master_repl_offset = Some(String::from("0"));
         }
         config
+    }
+    pub fn is_master(&self) -> bool {
+        self.role == "master"
     }
 }

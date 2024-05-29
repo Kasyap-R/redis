@@ -11,6 +11,30 @@ use crate::config::*;
 use crate::resp::resp_parser::*;
 use crate::resp::resp_serializer::*;
 
+async fn perform_handshake(config: &Arc<Config>) {
+    use crate::resp::RespType;
+    if config.is_master() {
+        return;
+    }
+    println!("{}", config.master_port.as_ref().unwrap());
+    println!("{}", config.master_host.as_ref().unwrap());
+    let handshake: RespType =
+        RespType::Array(vec![RespType::BulkString(Some(String::from("PING")))]);
+    let serialized_handshake = serialize_resp_data(handshake);
+    let mut stream = match TcpStream::connect(format!(
+        "{}:{}",
+        config.master_host.as_ref().unwrap(),
+        config.master_port.as_ref().unwrap()
+    ))
+    .await
+    {
+        Ok(x) => x,
+        Err(e) => panic!("{}", e),
+    };
+    let _ = stream.write_all(serialized_handshake.as_bytes()).await;
+    println!("{}", serialized_handshake);
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<(dyn std::error::Error + 'static)>> {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -18,7 +42,7 @@ async fn main() -> Result<(), Box<(dyn std::error::Error + 'static)>> {
 
     let config = Arc::new(Config::parse());
     let listener = TcpListener::bind(format!("127.0.0.1:{}", &config.port)).await?;
-
+    perform_handshake(&config).await;
     loop {
         let (stream, _) = listener.accept().await?;
         let config = Arc::clone(&config);
@@ -86,13 +110,18 @@ async fn handle_conn(mut stream: TcpStream, config: Arc<Config>) {
                 }
                 Command::Info(_arg) => {
                     let response = match config.role.as_str() {
-                        "master" => serialize_to_bulk_string(format!(
-                            "role:{}\nmaster_replid:{}\nmaster_repl_offset:{}\n",
-                            config.role,
-                            config.master_replid.as_ref().unwrap(),
-                            config.master_repl_offset.as_ref().unwrap()
+                        "master" => serialize_resp_data(resp::RespType::BulkString(
+                            format!(
+                                "role:{}\nmaster_replid:{}\nmaster_repl_offset:{}\n",
+                                config.role,
+                                config.master_replid.as_ref().unwrap(),
+                                config.master_repl_offset.as_ref().unwrap()
+                            )
+                            .into(),
                         )),
-                        "slave" => serialize_to_bulk_string(format!("role:{}", config.role)),
+                        "slave" => serialize_resp_data(resp::RespType::BulkString(
+                            format!("role:{}", config.role).into(),
+                        )),
                         _ => panic!("Redis instance must be either slave or master"),
                     };
                     let _ = stream.write_all(response.as_bytes()).await;
