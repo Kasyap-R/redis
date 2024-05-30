@@ -150,7 +150,7 @@ async fn handle_conn(mut stream: TcpStream, config: Arc<Config>) {
                 },
                 Command::ReplConf(_arg1, _arg2) => String::from("+OK\r\n"),
                 Command::Psync(_replication_id, _offset) => {
-                    String::from("+FULLRESYNC <REPL_ID> 0\r\n")
+                    String::from("+FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0\r\n")
                 }
                 _ => panic!("Unsupported Command"),
             };

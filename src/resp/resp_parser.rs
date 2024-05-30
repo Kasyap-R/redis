@@ -119,7 +119,7 @@ impl Command {
                 if len_args != 2 {
                     panic!("Inappropriate Number of arguments for the PSYNC command");
                 }
-                let mut strings: Vec<String> = Vec::new();
+                let mut strings: [String; 2] = Default::default();
                 for (index, arg) in args.iter().take(2).enumerate() {
                     match arg {
                         RespType::BulkString(x) => {
