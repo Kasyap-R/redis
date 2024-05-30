@@ -148,7 +148,7 @@ async fn handle_conn(mut stream: TcpStream, config: Arc<Config>) {
                     )),
                     _ => panic!("Redis instance must be either slave or master"),
                 },
-                Command::ReplConf(_arg1, _arg2, _arg3) => String::from("+OK\r\n"),
+                Command::ReplConf(_arg1, _arg2) => String::from("+OK\r\n"),
                 Command::Psync(_replication_id, _offset) => {
                     String::from("+FULLRESYNC <REPL_ID> 0\r\n")
                 }

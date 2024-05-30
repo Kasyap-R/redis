@@ -7,7 +7,7 @@ pub enum Command {
     Set(String, String, Option<u64>),
     Get(String),
     Info(String),
-    ReplConf(String, String, Option<String>),
+    ReplConf(String, String),
     Psync(String, String),
 }
 
@@ -58,11 +58,11 @@ impl Command {
 
     fn handle_replconf(args: Vec<RespType>) -> Command {
         let len_args = args.len();
-        let mut strings: Vec<String> = Vec::new();
-        if len_args != 3 {
+        let mut strings: [String; 2] = Default::default();
+        if len_args != 2 {
             panic!("Inappropriate Number of arguments for the REPLCONF command");
         }
-        for (index, arg) in args.iter().take(3).enumerate() {
+        for (index, arg) in args.iter().take(2).enumerate() {
             match arg {
                 RespType::BulkString(x) => {
                     strings[index] = String::from(x.as_ref().unwrap());
@@ -73,11 +73,7 @@ impl Command {
                 _ => panic!("Arguments for REPLCONF need to be strings"),
             }
         }
-        Command::ReplConf(
-            strings[0].clone(),
-            strings[1].clone(),
-            Some(strings[2].clone()),
-        )
+        Command::ReplConf(strings[0].clone(), strings[1].clone())
     }
     fn string_to_command(command: String, args: Vec<RespType>) -> Command {
         let len_args = args.len();
