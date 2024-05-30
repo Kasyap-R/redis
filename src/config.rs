@@ -32,14 +32,14 @@ impl Config {
                     }
                 }
                 "--replicaof" => {
-                    if index + 1 < args.len() {
+                    if index < args.len() {
                         let parts: Vec<&str> = args[index + 1].split(" ").collect();
                         config.master_host = Some(parts[0].to_string());
                         config.master_port = Some(parts[1].to_string());
                         config.role = String::from("slave");
                         index += 1; // Skip the next argument since it's the value for --port
                     } else {
-                        panic!("Error: --replicaof requires a value");
+                        panic!("Error: --replicaof requires two values");
                     }
                 }
                 _ => {}
