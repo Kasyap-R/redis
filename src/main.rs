@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-pub mod command;
 pub mod config;
 pub mod redis;
 pub mod resp;

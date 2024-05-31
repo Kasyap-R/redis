@@ -1,7 +1,8 @@
+use self::command::Command;
 use self::synchronize::construct_rdb;
-use crate::command::Command;
 use crate::config::Config;
 use crate::resp::{resp_parser::RespParser, resp_serializer::serialize_resp_data, RespType};
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -11,18 +12,21 @@ use tokio::task;
 use tokio::time::{sleep, Duration};
 // In future, add modules like redis::commands (maybe move current command), redis::synchronize
 
+pub mod command;
 pub mod synchronize;
 
 pub struct Redis {
     database: Arc<Mutex<HashMap<String, String>>>,
     config: Arc<Config>,
     listener: TcpListener,
+    replica_connections: Arc<Mutex<Option<HashMap<String, Arc<Mutex<TcpStream>>>>>>,
 }
 
 impl Redis {
-    async fn handle_conn(&self, mut stream: TcpStream) {
+    async fn handle_conn(&mut self, mut stream: TcpStream) {
         let database: Arc<Mutex<HashMap<String, String>>> = Arc::clone(&self.database);
         let config = Arc::clone(&self.config);
+        let replica_connections = Arc::clone(&self.replica_connections);
         task::spawn(async move {
             let mut buf = [0; 512];
             loop {
@@ -41,70 +45,34 @@ impl Redis {
                 let mut parser = RespParser::new(
                     String::from_utf8(buf.to_vec()).expect("Invalid UTF-8 sequence"),
                 );
-                let mut db = database.lock().await;
                 let command = parser.parse_command();
+                // If command is write and this is the master, propagate to all replicas
                 match command {
                     Command::Echo(message) => {
-                        let response =
-                            String::from(&format!("${}\r\n{}\r\n", message.len(), message));
-                        let _ = stream.write_all(response.as_bytes()).await;
+                        handle_echo(message, &mut stream).await;
                     }
                     Command::Ping => {
-                        let response = String::from("+PONG\r\n");
-                        let _ = stream.write_all(response.as_bytes()).await;
+                        handle_ping(&mut stream).await;
                     }
                     Command::Set(key, value, expiry) => {
-                        {
-                            db.insert(key.clone(), value);
-                        }
-                        if let Some(delay_millis) = expiry {
-                            let key_clone = key.clone();
-                            let db_clone = Arc::clone(&database);
-                            tokio::spawn(async move {
-                                sleep(Duration::from_millis(delay_millis)).await;
-                                let mut db = db_clone.lock().await;
-                                db.remove(&key_clone);
-                            });
-                        }
-                        let response = String::from("+OK\r\n");
-                        let _ = stream.write_all(response.as_bytes()).await;
+                        handle_set(key, value, expiry, &mut stream, Arc::clone(&database)).await;
                     }
                     Command::Get(key) => {
-                        let response = match db.get(&key) {
-                            Some(y) => String::from(format!("${}\r\n{}\r\n", y.len(), y)),
-                            None => String::from("$-1\r\n"),
-                        };
-                        let _ = stream.write_all(response.as_bytes()).await;
+                        handle_get(key, &mut stream, Arc::clone(&database)).await;
                     }
-                    Command::Info(_arg) => {
-                        let response = match config.role.as_str() {
-                            "master" => serialize_resp_data(RespType::BulkString(
-                                format!(
-                                    "role:{}\nmaster_replid:{}\nmaster_repl_offset:{}\n",
-                                    config.role,
-                                    config.master_replid.as_ref().unwrap(),
-                                    config.master_repl_offset.as_ref().unwrap()
-                                )
-                                .into(),
-                            )),
-                            "slave" => serialize_resp_data(RespType::BulkString(
-                                format!("role:{}", config.role).into(),
-                            )),
-                            _ => panic!("Redis instance must be either slave or master"),
-                        };
-                        let _ = stream.write_all(response.as_bytes()).await;
+                    Command::Info(arg) => {
+                        handle_info(arg, Arc::clone(&config), &mut stream).await;
                     }
-                    Command::ReplConf(_arg1, _arg2) => {
-                        let response = String::from("+OK\r\n");
-                        let _ = stream.write_all(response.as_bytes()).await;
+                    Command::ReplConf(arg1, arg2) => {
+                        if !config.is_master() {
+                            panic!("Recieving REPLCONF command as a replica, should exclusively be sent by replicas to masters");
+                        }
+                        handle_replconf(arg1, arg2, &mut stream, Arc::clone(&replica_connections))
+                            .await;
                     }
-                    Command::Psync(_replication_id, _offset) => {
-                        let repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
-                        let response = String::from(&format!("+FULLRESYNC {} 0\r\n", repl_id));
-                        let _ = stream.write_all(response.as_bytes()).await;
-                        let (length, binary) = construct_rdb(Arc::clone(&database));
-                        let _ = stream.write_all(length.as_bytes()).await;
-                        let _ = stream.write_all(&binary).await;
+                    Command::Psync(replication_id, offset) => {
+                        handle_psync(replication_id, offset, &mut stream, Arc::clone(&database))
+                            .await;
                     }
                     _ => panic!("Unsupported Command"),
                 };
@@ -185,6 +153,110 @@ impl Redis {
             database: Arc::new(Mutex::new(HashMap::new())),
             config,
             listener,
+            replica_connections: Arc::new(Mutex::new(None)),
         })
     }
+}
+
+async fn handle_echo(message: String, stream: &mut tokio::net::TcpStream) {
+    let response = String::from(&format!("${}\r\n{}\r\n", message.len(), message));
+    let _ = stream.write_all(response.as_bytes()).await;
+}
+
+async fn handle_ping(stream: &mut tokio::net::TcpStream) {
+    let response = String::from("+PONG\r\n");
+    let _ = stream.write_all(response.as_bytes()).await;
+}
+
+async fn handle_set(
+    key: String,
+    value: String,
+    expiry: Option<u64>,
+    stream: &mut tokio::net::TcpStream,
+    db: Arc<Mutex<HashMap<String, String>>>,
+) {
+    {
+        let mut db = db.lock().await;
+        db.insert(key.clone(), value);
+    }
+    if let Some(delay_millis) = expiry {
+        let key_clone = key.clone();
+        let db_clone = Arc::clone(&db);
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(delay_millis)).await;
+            let mut db = db_clone.lock().await;
+            db.remove(&key_clone);
+        });
+    }
+    let response = String::from("+OK\r\n");
+    let _ = stream.write_all(response.as_bytes()).await;
+}
+
+async fn handle_get(
+    key: String,
+    stream: &mut tokio::net::TcpStream,
+    db: Arc<Mutex<HashMap<String, String>>>,
+) {
+    let db = db.lock().await;
+    let response = match db.get(&key) {
+        Some(y) => String::from(format!("${}\r\n{}\r\n", y.len(), y)),
+        None => String::from("$-1\r\n"),
+    };
+    let _ = stream.write_all(response.as_bytes()).await;
+}
+
+async fn handle_info(_arg: String, config: Arc<Config>, stream: &mut tokio::net::TcpStream) {
+    let response = match config.role.as_str() {
+        "master" => serialize_resp_data(RespType::BulkString(
+            format!(
+                "role:{}\nmaster_replid:{}\nmaster_repl_offset:{}\n",
+                config.role,
+                config.master_replid.as_ref().unwrap(),
+                config.master_repl_offset.as_ref().unwrap()
+            )
+            .into(),
+        )),
+        "slave" => {
+            serialize_resp_data(RespType::BulkString(format!("role:{}", config.role).into()))
+        }
+        _ => panic!("Redis instance must be either slave or master"),
+    };
+    let _ = stream.write_all(response.as_bytes()).await;
+}
+
+async fn handle_replconf(
+    arg1: String,
+    arg2: String,
+    mut stream: TcpStream,
+    replica_connections: Arc<Mutex<Option<HashMap<String, Arc<Mutex<TcpStream>>>>>>,
+) {
+    // If we recieve a replconf with a port argument, we know it is a replica, add its port to our
+    // hashmap for synchronization purposes
+    let mut guard = replica_connections.lock().await;
+    match *guard {
+        Some(ref mut connections) => {
+            if arg1 == "listening-port" {
+                let wrapped_stream = Arc::new(Mutex::new(stream));
+                let _ = connections.insert(arg2, Arc::clone(&wrapped_stream));
+                stream = wrapped_stream.lock().await;
+            }
+        }
+        None => panic!("Master should have a hashmap dedicated to storing connections to replicas"),
+    }
+    let response = String::from("+OK\r\n");
+    let _ = stream.write_all(response.as_bytes()).await;
+}
+
+async fn handle_psync(
+    _replication_id: String,
+    _offset: String,
+    stream: &mut tokio::net::TcpStream,
+    db: Arc<Mutex<HashMap<String, String>>>,
+) {
+    let repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+    let response = String::from(&format!("+FULLRESYNC {} 0\r\n", repl_id));
+    let _ = stream.write_all(response.as_bytes()).await;
+    let (length, binary) = construct_rdb(Arc::clone(&db));
+    let _ = stream.write_all(length.as_bytes()).await;
+    let _ = stream.write_all(&binary).await;
 }

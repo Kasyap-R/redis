@@ -1,5 +1,5 @@
 use super::RespType;
-use crate::command::Command;
+use crate::redis::command::Command;
 
 pub struct RespParser {
     raw_data: String,
