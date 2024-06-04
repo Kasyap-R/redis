@@ -1,4 +1,5 @@
 use super::RespType;
+use crate::redis::command::Command;
 
 fn serialize_bulk_string(data: String) -> String {
     let str_len = data.len();
@@ -21,4 +22,23 @@ pub fn serialize_resp_data(data: RespType) -> String {
         other @ _ => panic!("Serialization isn't support for {:?}", other),
     };
     serialized
+}
+
+// TODO: Eventually I should be able to use this function for everything
+pub fn serialize_command(command: &Command) -> String {
+    match command {
+        Command::Set(key, value, expiry) => {
+            let mut serialized: Vec<RespType> = vec![
+                RespType::BulkString(Some(String::from("SET"))),
+                RespType::BulkString(Some(String::from(format!("{}", key)))),
+                RespType::BulkString(Some(String::from(format!("{}", value)))),
+            ];
+            if let Some(x) = expiry {
+                serialized.push(RespType::BulkString(Some(String::from(format!("{}", x)))));
+            }
+            let x = serialize_resp_data(RespType::Array(serialized));
+            x
+        }
+        other @ _ => panic!("Serialization unsupported for {:?}", other),
+    }
 }

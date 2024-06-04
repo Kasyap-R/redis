@@ -12,6 +12,17 @@ pub enum Command {
 }
 
 impl Command {
+    pub fn is_write(&self) -> bool {
+        match self {
+            Self::Ping => false,
+            Self::Echo(_) => false,
+            Self::Set(_, _, _) => true,
+            Self::Get(_) => false,
+            Self::Info(_) => false,
+            Self::ReplConf(_, _) => false,
+            Self::Psync(_, _) => false,
+        }
+    }
     fn handle_set(args: Vec<RespType>) -> Command {
         let len_args = args.len();
         let mut strings: [String; 2] = Default::default();
