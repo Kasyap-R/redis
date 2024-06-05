@@ -105,10 +105,6 @@ impl Redis {
                         handle_replconf(Arc::clone(&stream)).await;
                     }
                     Command::Psync(replication_id, offset) => {
-                        {
-                            let stream = stream.read().await;
-                            println!("Stream that sent PSYNC: {:?}", stream);
-                        }
                         if !config.is_master() {
                             panic!("Recieving PSYNC command as a replica, should exclusively be sent by replicas to masters");
                         }
@@ -244,10 +240,8 @@ async fn is_replica(
         let stream_addr = stream.as_raw_fd();
         for (_port, replica_stream) in connections.iter() {
             let replica_stream = replica_stream.read().await;
-            println!("List of streams: {:?}", replica_stream);
 
             if stream_addr == replica_stream.as_raw_fd() {
-                println!("Found replica stream");
                 return true;
             }
         }
@@ -349,6 +343,5 @@ async fn handle_psync(
         let _ = stream.write_all(length.as_bytes()).await;
         let _ = stream.write_all(&binary).await;
         let _ = stream.flush().await; // Ensure data is flushed
-        println!("Finished PSYNC handling");
     }
 }
