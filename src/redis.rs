@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task;
 use tokio::time::{sleep, Duration};
 
@@ -18,21 +18,27 @@ pub struct Redis {
     database: Arc<Mutex<HashMap<String, String>>>,
     config: Arc<Config>,
     listener: TcpListener,
-    replica_connections: Arc<Mutex<Option<HashMap<String, Arc<Mutex<TcpStream>>>>>>,
-    master_connection: Arc<Mutex<Option<Arc<Mutex<TcpStream>>>>>,
+    replica_connections: Arc<RwLock<Option<HashMap<String, Arc<RwLock<TcpStream>>>>>>,
+    master_connection: Arc<Mutex<Option<Arc<RwLock<TcpStream>>>>>,
     // Replicas must maintain their connection to master, this is they will propagate changes
 }
 
 impl Redis {
-    async fn handle_conn(&mut self, stream: Arc<Mutex<TcpStream>>) {
+    async fn handle_conn(&mut self, stream: Arc<RwLock<TcpStream>>) {
         let database: Arc<Mutex<HashMap<String, String>>> = Arc::clone(&self.database);
         let config = Arc::clone(&self.config);
         let replica_connections = Arc::clone(&self.replica_connections);
         task::spawn(async move {
             let mut buf = [0; 512];
             loop {
-                {
-                    let mut stream = stream.lock().await;
+                // Ultimately I can't listen to a stream coming from the replica apart from certain
+                // conditions
+
+                // If a stream is a replica stream, don't automatically listen to it
+                // We do have to listen until the handshake is complete though
+                if !is_replica(Arc::clone(&replica_connections), Arc::clone(&stream)).await {
+                    let mut stream = stream.write().await;
+                    println!("Non replica stream: {:?}", stream);
                     match stream.read(&mut buf).await {
                         Ok(0) => break,
                         Ok(n) => n,
@@ -41,7 +47,10 @@ impl Redis {
                             return;
                         }
                     };
+                } else {
+                    continue;
                 }
+
                 println!(
                     "{}",
                     String::from_utf8(buf.to_vec()).expect("Invalid UTF-8 sequence")
@@ -50,14 +59,15 @@ impl Redis {
                     String::from_utf8(buf.to_vec()).expect("Invalid UTF-8 sequence"),
                 );
                 let command = parser.parse_command();
+
                 // If command is write and this is the master, propagate command to all replicas
                 if config.is_master() && command.is_write() {
-                    let replica_connections = replica_connections.lock().await;
+                    let replica_connections = replica_connections.read().await;
                     if let Some(ref connections) = *replica_connections {
                         for (_port, replica_stream) in connections.iter() {
                             println!("Propagating changes");
                             synchronize::propagate_command_to_replica(
-                                Arc::clone(replica_stream),
+                                Arc::clone(&replica_stream),
                                 &command,
                             )
                             .await;
@@ -88,19 +98,17 @@ impl Redis {
                     Command::Info(arg) => {
                         handle_info(arg, Arc::clone(&config), Arc::clone(&stream)).await;
                     }
-                    Command::ReplConf(arg1, arg2) => {
+                    Command::ReplConf(_arg1, _arg2) => {
                         if !config.is_master() {
                             panic!("Recieving REPLCONF command as a replica, should exclusively be sent by replicas to masters");
                         }
-                        handle_replconf(
-                            arg1,
-                            arg2,
-                            Arc::clone(&stream),
-                            Arc::clone(&replica_connections),
-                        )
-                        .await;
+                        handle_replconf(Arc::clone(&stream)).await;
                     }
                     Command::Psync(replication_id, offset) => {
+                        {
+                            let stream = stream.read().await;
+                            println!("Stream that sent PSYNC: {:?}", stream);
+                        }
                         if !config.is_master() {
                             panic!("Recieving PSYNC command as a replica, should exclusively be sent by replicas to masters");
                         }
@@ -111,6 +119,14 @@ impl Redis {
                             Arc::clone(&database),
                         )
                         .await;
+                        // This should mark the end of the handshake process, so we can set this to
+                        let mut guard = replica_connections.write().await;
+                        match *guard {
+                            Some(ref mut connections) => {
+                                let _ = connections.insert(String::from("active"), Arc::clone(&stream));
+                            }
+                            None => panic!("Master should have a hashmap dedicated to storing connections to replicas"),
+                        }
                     }
                     _ => panic!("Unsupported Command"),
                 };
@@ -174,7 +190,7 @@ impl Redis {
         let _ = Redis::send_and_recieve(&mut stream, &serialized_repl_port).await;
         let _ = Redis::send_and_recieve(&mut stream, &serialized_repl_capa).await;
         let _ = Redis::send_and_recieve(&mut stream, &serialized_psync).await;
-        self.master_connection = Arc::new(Mutex::new(Some(Arc::new(Mutex::new(stream)))));
+        self.master_connection = Arc::new(Mutex::new(Some(Arc::new(RwLock::new(stream)))));
     }
 
     pub async fn listen(&mut self) -> Result<Self, Box<(dyn std::error::Error + 'static)>> {
@@ -192,7 +208,7 @@ impl Redis {
         loop {
             let (stream, _) = self.listener.accept().await?;
             println!("New stream connected to master: {:?}", stream);
-            let stream = Arc::new(Mutex::new(stream));
+            let stream = Arc::new(RwLock::new(stream));
             self.handle_conn(Arc::clone(&stream)).await;
         }
     }
@@ -201,10 +217,10 @@ impl Redis {
         config: Arc<Config>,
         listener: TcpListener,
     ) -> Result<Self, Box<(dyn std::error::Error + 'static)>> {
-        let connections: Arc<Mutex<Option<HashMap<String, Arc<Mutex<TcpStream>>>>>> =
+        let connections: Arc<RwLock<Option<HashMap<String, Arc<RwLock<TcpStream>>>>>> =
             match config.is_master() {
-                true => Arc::new(Mutex::new(Some(HashMap::new()))),
-                false => Arc::new(Mutex::new(None)),
+                true => Arc::new(RwLock::new(Some(HashMap::new()))),
+                false => Arc::new(RwLock::new(None)),
             };
         Ok(Redis {
             database: Arc::new(Mutex::new(HashMap::new())),
@@ -216,15 +232,38 @@ impl Redis {
     }
 }
 
-async fn handle_echo(message: String, stream: Arc<Mutex<TcpStream>>) {
+async fn is_replica(
+    replica_connections: Arc<RwLock<Option<HashMap<String, Arc<RwLock<TcpStream>>>>>>,
+    stream: Arc<RwLock<TcpStream>>,
+) -> bool {
+    use std::os::unix::io::AsRawFd;
+
+    let replica_connections = replica_connections.write().await;
+    if let Some(ref connections) = *replica_connections {
+        let stream = stream.read().await;
+        let stream_addr = stream.as_raw_fd();
+        for (_port, replica_stream) in connections.iter() {
+            let replica_stream = replica_stream.read().await;
+            println!("List of streams: {:?}", replica_stream);
+
+            if stream_addr == replica_stream.as_raw_fd() {
+                println!("Found replica stream");
+                return true;
+            }
+        }
+    }
+    false
+}
+
+async fn handle_echo(message: String, stream: Arc<RwLock<TcpStream>>) {
     let response = String::from(&format!("${}\r\n{}\r\n", message.len(), message));
-    let mut stream = stream.lock().await;
+    let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }
 
-async fn handle_ping(stream: Arc<Mutex<TcpStream>>) {
+async fn handle_ping(stream: Arc<RwLock<TcpStream>>) {
     let response = String::from("+PONG\r\n");
-    let mut stream = stream.lock().await;
+    let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }
 
@@ -232,7 +271,7 @@ async fn handle_set(
     key: String,
     value: String,
     expiry: Option<u64>,
-    stream: Arc<Mutex<TcpStream>>,
+    stream: Arc<RwLock<TcpStream>>,
     db: Arc<Mutex<HashMap<String, String>>>,
 ) {
     {
@@ -249,13 +288,13 @@ async fn handle_set(
         });
     }
     let response = String::from("+OK\r\n");
-    let mut stream = stream.lock().await;
+    let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }
 
 async fn handle_get(
     key: String,
-    stream: Arc<Mutex<TcpStream>>,
+    stream: Arc<RwLock<TcpStream>>,
     db: Arc<Mutex<HashMap<String, String>>>,
 ) {
     let db = db.lock().await;
@@ -263,11 +302,11 @@ async fn handle_get(
         Some(y) => String::from(format!("${}\r\n{}\r\n", y.len(), y)),
         None => String::from("$-1\r\n"),
     };
-    let mut stream = stream.lock().await;
+    let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }
 
-async fn handle_info(_arg: String, config: Arc<Config>, stream: Arc<Mutex<TcpStream>>) {
+async fn handle_info(_arg: String, config: Arc<Config>, stream: Arc<RwLock<TcpStream>>) {
     let response = match config.role.as_str() {
         "master" => serialize_resp_data(RespType::BulkString(
             format!(
@@ -283,63 +322,33 @@ async fn handle_info(_arg: String, config: Arc<Config>, stream: Arc<Mutex<TcpStr
         }
         _ => panic!("Redis instance must be either slave or master"),
     };
-    let mut stream = stream.lock().await;
+    let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }
 
-async fn handle_replconf(
-    arg1: String,
-    arg2: String,
-    stream: Arc<Mutex<TcpStream>>,
-    replica_connections: Arc<Mutex<Option<HashMap<String, Arc<Mutex<TcpStream>>>>>>,
-) {
-    // If we recieve a replconf with a port argument, we know it is a replica, add its port to our
-    // hashmap for synchronization purposes
-    let mut guard = replica_connections.lock().await;
-    match *guard {
-        Some(ref mut connections) => {
-            if arg1 == "listening-port" {
-                println!("Listening Port: {}", arg2);
-                let addr = format!("127.0.0.1:{}", arg2);
-                /* match TcpStream::connect(&addr).await {
-                    Ok(new_stream) => {
-                        let new_stream = Arc::new(Mutex::new(new_stream));
-                        let _ = connections.insert(arg2, Arc::clone(&new_stream));
-                        println!("Added new stream to map");
-
-                        // Respond to the original stream with +OK
-                        let response = String::from("+OK\r\n");
-                        let mut original_stream = stream.lock().await;
-                        let _ = original_stream.write_all(response.as_bytes()).await;
-                        println!("Handshake stream: {:?}", stream);
-                    }
-                    Err(e) => {
-                        println!("Failed to connect to replica at {}: {}", addr, e);
-                    }
-                } */
-                let _ = connections.insert(arg2, Arc::clone(&stream));
-                println!("Added stream to map");
-            }
-        }
-        None => panic!("Master should have a hashmap dedicated to storing connections to replicas"),
-    }
+async fn handle_replconf(stream: Arc<RwLock<TcpStream>>) {
     let response = String::from("+OK\r\n");
-    println!("Handshake stream: {:?}", stream);
-    let mut stream = stream.lock().await;
+    let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }
 
 async fn handle_psync(
     _replication_id: String,
     _offset: String,
-    stream: Arc<Mutex<TcpStream>>,
+    stream: Arc<RwLock<TcpStream>>,
     db: Arc<Mutex<HashMap<String, String>>>,
 ) {
-    let repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
-    let response = String::from(&format!("+FULLRESYNC {} 0\r\n", repl_id));
-    let mut stream = stream.lock().await;
-    let _ = stream.write_all(response.as_bytes()).await;
-    let (length, binary) = construct_rdb(Arc::clone(&db));
-    let _ = stream.write_all(length.as_bytes()).await;
-    let _ = stream.write_all(&binary).await;
+    {
+        let mut stream = stream.write().await;
+
+        let repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+        let response = String::from(&format!("+FULLRESYNC {} 0\r\n", repl_id));
+        let (length, binary) = construct_rdb(Arc::clone(&db));
+
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.write_all(length.as_bytes()).await;
+        let _ = stream.write_all(&binary).await;
+        let _ = stream.flush().await; // Ensure data is flushed
+        println!("Finished PSYNC handling");
+    }
 }
