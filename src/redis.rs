@@ -18,7 +18,7 @@ pub struct Redis {
     database: Arc<Mutex<HashMap<String, String>>>,
     config: Arc<Config>,
     listener: TcpListener,
-    replica_connections: Arc<RwLock<Option<HashMap<String, Arc<RwLock<TcpStream>>>>>>,
+    replica_connections: Arc<RwLock<Option<HashMap<i32, Arc<RwLock<TcpStream>>>>>>,
     master_connection: Arc<Mutex<Option<Arc<RwLock<TcpStream>>>>>,
     // Replicas must maintain their connection to master, this is they will propagate changes
 }
@@ -112,17 +112,15 @@ impl Redis {
                             Arc::clone(&database),
                         )
                         .await;
-                        // This should mark the end of the handshake process, so we can set this to
-                        {
-                            use std::os::unix::io::AsRawFd;
-                            let mut guard = replica_connections.write().await;
-                            match *guard {
-                                Some(ref mut connections) => {
-                                    let fd = stream.read().await.as_raw_fd();
-                                    let _ = connections.insert(fd.to_string(), Arc::clone(&stream));
-                                }
-                                None => panic!("Master should have a hashmap dedicated to storing connections to replicas"),
+
+                        use std::os::unix::io::AsRawFd;
+                        let mut guard = replica_connections.write().await;
+                        match *guard {
+                            Some(ref mut connections) => {
+                                let fd = stream.read().await.as_raw_fd();
+                                let _ = connections.insert(fd, Arc::clone(&stream));
                             }
+                            None => panic!("Master should have a hashmap dedicated to storing connections to replicas"),
                         }
                     }
                     _ => panic!("Unsupported Command"),
@@ -214,7 +212,7 @@ impl Redis {
         config: Arc<Config>,
         listener: TcpListener,
     ) -> Result<Self, Box<(dyn std::error::Error + 'static)>> {
-        let connections: Arc<RwLock<Option<HashMap<String, Arc<RwLock<TcpStream>>>>>> =
+        let connections: Arc<RwLock<Option<HashMap<i32, Arc<RwLock<TcpStream>>>>>> =
             match config.is_master() {
                 true => Arc::new(RwLock::new(Some(HashMap::new()))),
                 false => Arc::new(RwLock::new(None)),
@@ -230,7 +228,7 @@ impl Redis {
 }
 
 async fn is_replica(
-    replica_connections: Arc<RwLock<Option<HashMap<String, Arc<RwLock<TcpStream>>>>>>,
+    replica_connections: Arc<RwLock<Option<HashMap<i32, Arc<RwLock<TcpStream>>>>>>,
     stream: Arc<RwLock<TcpStream>>,
 ) -> bool {
     use std::os::unix::io::AsRawFd;
@@ -238,11 +236,9 @@ async fn is_replica(
     let replica_connections = replica_connections.write().await;
     if let Some(ref connections) = *replica_connections {
         let stream = stream.read().await;
-        let stream_addr = stream.as_raw_fd();
-        for (_port, replica_stream) in connections.iter() {
-            let replica_stream = replica_stream.read().await;
-
-            if stream_addr == replica_stream.as_raw_fd() {
+        let stream_fd = stream.as_raw_fd();
+        for (replica_fd, _replica_stream) in connections.iter() {
+            if stream_fd == *replica_fd {
                 return true;
             }
         }
