@@ -31,9 +31,6 @@ impl Redis {
         task::spawn(async move {
             let mut buf = [0; 512];
             loop {
-                // Ultimately I can't listen to a stream coming from the replica apart from certain
-                // conditions
-
                 // If a stream is a replica stream, don't automatically listen to it
                 // We do have to listen until the handshake is complete though
                 if !is_replica(Arc::clone(&replica_connections), Arc::clone(&stream)).await {
@@ -48,7 +45,7 @@ impl Redis {
                         }
                     };
                 } else {
-                    continue;
+                    sleep(Duration::from_secs(180)).await;
                 }
 
                 println!(
@@ -65,7 +62,7 @@ impl Redis {
                     let replica_connections = replica_connections.read().await;
                     if let Some(ref connections) = *replica_connections {
                         for (_port, replica_stream) in connections.iter() {
-                            println!("Propagating changes");
+                            println!("Found replica stream");
                             synchronize::propagate_command_to_replica(
                                 Arc::clone(&replica_stream),
                                 &command,
@@ -116,12 +113,16 @@ impl Redis {
                         )
                         .await;
                         // This should mark the end of the handshake process, so we can set this to
-                        let mut guard = replica_connections.write().await;
-                        match *guard {
-                            Some(ref mut connections) => {
-                                let _ = connections.insert(String::from("active"), Arc::clone(&stream));
+                        {
+                            use std::os::unix::io::AsRawFd;
+                            let mut guard = replica_connections.write().await;
+                            match *guard {
+                                Some(ref mut connections) => {
+                                    let fd = stream.read().await.as_raw_fd();
+                                    let _ = connections.insert(fd.to_string(), Arc::clone(&stream));
+                                }
+                                None => panic!("Master should have a hashmap dedicated to storing connections to replicas"),
                             }
-                            None => panic!("Master should have a hashmap dedicated to storing connections to replicas"),
                         }
                     }
                     _ => panic!("Unsupported Command"),
@@ -342,6 +343,5 @@ async fn handle_psync(
         let _ = stream.write_all(response.as_bytes()).await;
         let _ = stream.write_all(length.as_bytes()).await;
         let _ = stream.write_all(&binary).await;
-        let _ = stream.flush().await; // Ensure data is flushed
     }
 }
