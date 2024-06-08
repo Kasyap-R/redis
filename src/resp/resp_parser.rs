@@ -100,7 +100,7 @@ impl RespParser {
         RespType::BulkString(Some(bulk_string))
     }
 
-    fn read_data_till_crlf(&mut self) -> &str {
+    pub fn read_data_till_crlf(&mut self) -> &str {
         let curr_data = &self.raw_data[self.index..];
         let terminal_index = match curr_data.find("\r\n") {
             Some(x) => self.index + x,

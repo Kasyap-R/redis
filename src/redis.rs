@@ -19,7 +19,7 @@ pub struct Redis {
     config: Arc<Config>,
     listener: TcpListener,
     replica_connections: Arc<RwLock<Option<HashMap<i32, Arc<RwLock<TcpStream>>>>>>,
-    master_connection: Arc<Mutex<Option<Arc<RwLock<TcpStream>>>>>,
+    master_connection: Option<Arc<RwLock<TcpStream>>>,
     // Replicas must maintain their connection to master, this is they will propagate changes
 }
 
@@ -29,32 +29,24 @@ impl Redis {
         let config = Arc::clone(&self.config);
         let replica_connections = Arc::clone(&self.replica_connections);
         task::spawn(async move {
-            let mut buf = [0; 512];
             loop {
                 // If a stream is a replica stream, don't automatically listen to it
                 // We do have to listen until the handshake is complete though
+                let stream_data: String;
                 if !is_replica(Arc::clone(&replica_connections), Arc::clone(&stream)).await {
-                    let mut stream = stream.write().await;
-                    println!("Non replica stream: {:?}", stream);
-                    match stream.read(&mut buf).await {
-                        Ok(0) => break,
-                        Ok(n) => n,
-                        Err(e) => {
-                            println!("Failed to read from stream; err = {:?}", e);
-                            return;
-                        }
-                    };
+                    stream_data = match read_from_stream(Arc::clone(&stream)).await {
+                        Some(x) => x,
+                        None => break,
+                    }
                 } else {
-                    sleep(Duration::from_secs(180)).await;
+                    break;
                 }
 
-                println!(
-                    "{}",
-                    String::from_utf8(buf.to_vec()).expect("Invalid UTF-8 sequence")
-                );
-                let mut parser = RespParser::new(
-                    String::from_utf8(buf.to_vec()).expect("Invalid UTF-8 sequence"),
-                );
+                println!("====== Receiving new transmission ======");
+                println!("{}", stream_data,);
+                println!("====== End of new transmission ======");
+
+                let mut parser = RespParser::new(stream_data);
                 let command = parser.parse_command();
 
                 // If command is write and this is the master, propagate command to all replicas
@@ -181,21 +173,31 @@ impl Redis {
             Ok(x) => x,
             Err(e) => panic!("{}", e),
         };
+
         let _ = Redis::send_and_recieve(&mut stream, &serialized_ping).await;
         let _ = Redis::send_and_recieve(&mut stream, &serialized_repl_port).await;
         let _ = Redis::send_and_recieve(&mut stream, &serialized_repl_capa).await;
-        let _ = Redis::send_and_recieve(&mut stream, &serialized_psync).await;
-        self.master_connection = Arc::new(Mutex::new(Some(Arc::new(RwLock::new(stream)))));
+        let stream_data = Redis::send_and_recieve(&mut stream, &serialized_psync)
+            .await
+            .expect("Failed to recieve repl_id from master at the end of handshake");
+        // We read up to CRLF and then everything after is the contents of the RDB file
+        // if we don't read as much as we expect, we read again, until we do
+        // then the stream is empty enough
+        println!("====== Recieiving Psync Response from Master ======");
+        println!("{}", stream_data);
+        println!("====== End of Psync Response from Master ==========");
+        let mut parser = RespParser::new(stream_data);
+        // I will assume this first read contains all of the fullresync command
+        let repl_id = parser.read_data_till_crlf();
+        self.master_connection = Some(Arc::new(RwLock::new(stream)));
     }
 
     pub async fn listen(&mut self) -> Result<Self, Box<(dyn std::error::Error + 'static)>> {
         if !self.config.is_master() {
             let master_connection = {
-                let master_connection_guard = self.master_connection.lock().await;
-                if let Some(ref master_connection) = *master_connection_guard {
-                    Arc::clone(master_connection)
-                } else {
-                    panic!("Expected to have master connection on replica");
+                match &self.master_connection {
+                    Some(x) => Arc::clone(&x),
+                    None => panic!("Expected to have master connection on replica"),
                 }
             };
             self.handle_conn(master_connection).await;
@@ -222,8 +224,18 @@ impl Redis {
             config,
             listener,
             replica_connections: connections,
-            master_connection: Arc::new(Mutex::new(None)),
+            master_connection: None,
         })
+    }
+}
+
+async fn read_from_stream(stream: Arc<RwLock<TcpStream>>) -> Option<String> {
+    let mut stream = stream.write().await;
+    let mut buffer: [u8; 1024] = [0; 1024];
+    match stream.read(&mut buffer).await {
+        Ok(0) => None,
+        Ok(_) => Some(String::from_utf8(buffer.to_vec()).expect("Expected valid utf-8 sequence")),
+        Err(e) => panic!("Stream returned error: {:?}", e),
     }
 }
 
