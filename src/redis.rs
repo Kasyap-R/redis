@@ -26,7 +26,7 @@ pub struct Redis {
 }
 
 impl Redis {
-    async fn handle_conn(&mut self, stream: Arc<RwLock<TcpStream>>, parser: Option<RespParser>) {
+    async fn handle_conn(&mut self, stream: Arc<RwLock<TcpStream>>) {
         let database: Arc<Mutex<HashMap<String, String>>> = Arc::clone(&self.database);
         let config = Arc::clone(&self.config);
         let replica_connections = Arc::clone(&self.replica_connections);
