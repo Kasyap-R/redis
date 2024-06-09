@@ -1,7 +1,6 @@
 use self::command::Command;
 use self::synchronize::construct_rdb;
 use crate::config::Config;
-use crate::resp::resp_serializer::create_null_string;
 use crate::resp::{resp_parser::RespParser, resp_serializer::serialize_resp_data, RespType};
 
 use std::collections::HashMap;
@@ -13,7 +12,6 @@ use tokio::task;
 use tokio::time::{sleep, Duration};
 
 pub mod command;
-pub mod replica;
 pub mod synchronize;
 
 pub struct Redis {
@@ -26,11 +24,10 @@ pub struct Redis {
 }
 
 impl Redis {
-    async fn handle_conn(&mut self, stream: Arc<RwLock<TcpStream>>, parser: Option<RespParser>) {
+    async fn handle_conn(&mut self, stream: Arc<RwLock<TcpStream>>) {
         let database: Arc<Mutex<HashMap<String, String>>> = Arc::clone(&self.database);
         let config = Arc::clone(&self.config);
         let replica_connections = Arc::clone(&self.replica_connections);
-        // Each connection should have a dedicated parser
         task::spawn(async move {
             loop {
                 // If a stream is a replica stream, don't automatically listen to it
@@ -94,13 +91,13 @@ impl Redis {
                         if !config.is_master() {
                             panic!("Recieving REPLCONF command as a replica, should exclusively be sent by replicas to masters");
                         }
-                        replica::handle_replconf(Arc::clone(&stream)).await;
+                        handle_replconf(Arc::clone(&stream)).await;
                     }
                     Command::Psync(replication_id, offset) => {
                         if !config.is_master() {
                             panic!("Recieving PSYNC command as a replica, should exclusively be sent by replicas to masters");
                         }
-                        replica::handle_psync(
+                        handle_psync(
                             replication_id,
                             offset,
                             Arc::clone(&stream),
@@ -122,6 +119,78 @@ impl Redis {
                 };
             }
         });
+    }
+    async fn send_and_recieve(
+        stream: Arc<RwLock<TcpStream>>,
+        message: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let mut stream = stream.write().await;
+        // Write the message to the stream
+        stream.write_all(message.as_bytes()).await?;
+        stream.flush().await?;
+
+        // Buffer to store the response
+        let mut buf = [0; 1024];
+        let n = stream.read(&mut buf).await?;
+
+        // Convert the response to a String
+        let response = String::from_utf8_lossy(&buf[..n]).to_string();
+        Ok(response)
+    }
+    pub async fn perform_handshake(&mut self) {
+        use crate::resp::RespType;
+        if self.config.is_master() {
+            return;
+        }
+        let ping: RespType =
+            RespType::Array(vec![RespType::BulkString(Some(String::from("PING")))]);
+        let repl_port = RespType::Array(vec![
+            RespType::BulkString(Some(String::from("REPLCONF"))),
+            RespType::BulkString(Some(String::from("listening-port"))),
+            RespType::BulkString(Some(String::from(&format!("{}", self.config.port)))),
+        ]);
+        let repl_capa = RespType::Array(vec![
+            RespType::BulkString(Some(String::from("REPLCONF"))),
+            RespType::BulkString(Some(String::from("capa"))),
+            RespType::BulkString(Some(String::from("psync2"))),
+        ]);
+        let psync = RespType::Array(vec![
+            RespType::BulkString(Some(String::from("PSYNC"))),
+            RespType::BulkString(Some(String::from("?"))),
+            RespType::BulkString(Some(String::from("-1"))),
+        ]);
+
+        let serialized_ping = serialize_resp_data(ping);
+        let serialized_repl_port = serialize_resp_data(repl_port);
+        let serialized_repl_capa = serialize_resp_data(repl_capa);
+        let serialized_psync = serialize_resp_data(psync);
+        self.master_connection = match TcpStream::connect(format!(
+            "{}:{}",
+            self.config.master_host.as_ref().unwrap(),
+            self.config.master_port.as_ref().unwrap()
+        ))
+        .await
+        {
+            Ok(x) => Some(x),
+            Err(e) => panic!("{}", e),
+        };
+
+        let mut stream = Arc::clone(&self.master_connection.unwrap());
+        let _ = Redis::send_and_recieve(Arc::clone(&stream), &serialized_ping).await;
+        let _ = Redis::send_and_recieve(Arc::clone(&stream), &serialized_repl_port).await;
+        let _ = Redis::send_and_recieve(Arc::clone(&stream), &serialized_repl_capa).await;r
+        let stream_data = Redis::send_and_recieve(Arc::clone(stream), &serialized_psync)
+            .await
+            .expect("Failed to recieve repl_id from master at the end of handshake");
+        // We read up to CRLF and then everything after is the contents of the RDB file
+        // if we don't read as much as we expect, we read again, until we do
+        // then the stream is empty enough
+        println!("====== Recieiving Psync Response from Master ======");
+        println!("{}", stream_data);
+        println!("====== End of Psync Response from Master ==========");
+        let mut parser = RespParser::new(stream_data, Arc::clone(&stream));
+        // I will assume this first read contains all of the fullresync command
+        let repl_id = parser.read_data_till_crlf();
     }
 
     pub async fn listen(&mut self) -> Result<Self, Box<(dyn std::error::Error + 'static)>> {
@@ -171,7 +240,6 @@ async fn read_from_stream(stream: Arc<RwLock<TcpStream>>) -> Option<String> {
     }
 }
 
-// TODO: Add memoization for efficiency as we scale
 async fn is_replica(
     replica_connections: Arc<RwLock<Option<HashMap<i32, Arc<RwLock<TcpStream>>>>>>,
     stream: Arc<RwLock<TcpStream>>,
@@ -192,16 +260,13 @@ async fn is_replica(
 }
 
 async fn handle_echo(message: String, stream: Arc<RwLock<TcpStream>>) {
-    let response = serialize_resp_data(RespType::BulkString(Some(String::from(format!(
-        "{}",
-        message
-    )))));
+    let response = String::from(&format!("${}\r\n{}\r\n", message.len(), message));
     let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }
 
 async fn handle_ping(stream: Arc<RwLock<TcpStream>>) {
-    let response = serialize_resp_data(RespType::SimpleString(String::from("Pong")));
+    let response = String::from("+PONG\r\n");
     let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }
@@ -226,7 +291,7 @@ async fn handle_set(
             db.remove(&key_clone);
         });
     }
-    let response = serialize_resp_data(RespType::SimpleString(String::from("Ok")));
+    let response = String::from("+OK\r\n");
     let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }
@@ -238,8 +303,8 @@ async fn handle_get(
 ) {
     let db = db.lock().await;
     let response = match db.get(&key) {
-        Some(x) => serialize_resp_data(RespType::BulkString(Some(String::from(x)))),
-        None => create_null_string(),
+        Some(y) => String::from(format!("${}\r\n{}\r\n", y.len(), y)),
+        None => String::from("$-1\r\n"),
     };
     let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
@@ -247,12 +312,15 @@ async fn handle_get(
 
 async fn handle_info(_arg: String, config: Arc<Config>, stream: Arc<RwLock<TcpStream>>) {
     let response = match config.role.as_str() {
-        "master" => serialize_resp_data(RespType::BulkString(Some(format!(
-            "role:{}\nmaster_replid:{}\nmaster_repl_offset:{}\n",
-            config.role,
-            config.master_replid.as_ref().unwrap(),
-            config.master_repl_offset.as_ref().unwrap()
-        )))),
+        "master" => serialize_resp_data(RespType::BulkString(
+            format!(
+                "role:{}\nmaster_replid:{}\nmaster_repl_offset:{}\n",
+                config.role,
+                config.master_replid.as_ref().unwrap(),
+                config.master_repl_offset.as_ref().unwrap()
+            )
+            .into(),
+        )),
         "slave" => {
             serialize_resp_data(RespType::BulkString(format!("role:{}", config.role).into()))
         }
@@ -260,4 +328,29 @@ async fn handle_info(_arg: String, config: Arc<Config>, stream: Arc<RwLock<TcpSt
     };
     let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
+}
+
+async fn handle_replconf(stream: Arc<RwLock<TcpStream>>) {
+    let response = String::from("+OK\r\n");
+    let mut stream = stream.write().await;
+    let _ = stream.write_all(response.as_bytes()).await;
+}
+
+async fn handle_psync(
+    _replication_id: String,
+    _offset: String,
+    stream: Arc<RwLock<TcpStream>>,
+    db: Arc<Mutex<HashMap<String, String>>>,
+) {
+    {
+        let mut stream = stream.write().await;
+
+        let repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+        let response = String::from(&format!("+FULLRESYNC {} 0\r\n", repl_id));
+        let (length, binary) = construct_rdb(Arc::clone(&db));
+
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.write_all(length.as_bytes()).await;
+        let _ = stream.write_all(&binary).await;
+    }
 }

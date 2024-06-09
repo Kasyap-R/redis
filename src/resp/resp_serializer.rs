@@ -6,6 +6,10 @@ fn serialize_bulk_string(data: String) -> String {
     String::from(&format!("${}\r\n{}\r\n", str_len, data))
 }
 
+fn serialize_simple_string(data: String) -> String {
+    String::from(&format!("+{}\r\n", data))
+}
+
 fn serialize_array(data: Vec<RespType>) -> String {
     let length = data.len();
     let mut serialized = String::from(&format!("*{}\r\n", length));
@@ -19,12 +23,17 @@ pub fn serialize_resp_data(data: RespType) -> String {
     let serialized = match data {
         RespType::BulkString(x) => serialize_bulk_string(x.as_ref().unwrap().to_string()),
         RespType::Array(x) => serialize_array(x),
+        RespType::SimpleString(x) => serialize_simple_string(x.to_string()),
         other @ _ => panic!("Serialization isn't support for {:?}", other),
     };
     serialized
 }
 
-// TODO: Eventually I should be able to use this function for everything
+pub fn create_null_string() -> String {
+    String::from("$-1\r\n")
+}
+
+// TODO: Eventually I should be able to use this function for all commands
 pub fn serialize_command(command: &Command) -> String {
     match command {
         Command::Set(key, value, expiry) => {

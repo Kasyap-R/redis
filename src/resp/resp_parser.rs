@@ -1,20 +1,25 @@
 use super::RespType;
 use crate::redis::command::Command;
+use std::sync::Arc;
+use tokio::net::TcpStream;
+use tokio::sync::RwLock;
 
 pub struct RespParser {
     raw_data: String,
     length: usize,
     num_args: usize,
     index: usize,
+    stream: Arc<RwLock<TcpStream>>,
 }
 
 impl RespParser {
-    pub fn new(raw_data: String) -> RespParser {
+    pub fn new(raw_data: String, stream: Arc<RwLock<TcpStream>>) -> RespParser {
         let mut instance = RespParser {
             raw_data: raw_data.clone(),
             num_args: 0,
             length: raw_data.len(),
             index: 0,
+            stream,
         };
         instance.initialize();
         instance
