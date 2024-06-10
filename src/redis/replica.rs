@@ -51,11 +51,8 @@ async fn send_and_recieve(
     let response = String::from_utf8_lossy(&buf[..n]).to_string();
     Ok(response)
 }
-pub async fn perform_handshake(mut redis: Redis) -> Redis {
+pub async fn perform_handshake(redis: &mut Redis) -> RespParser {
     use crate::resp::RespType;
-    if redis.config.is_master() {
-        return redis;
-    }
     let ping: RespType = RespType::Array(vec![RespType::BulkString(Some(String::from("PING")))]);
     let repl_port = RespType::Array(vec![
         RespType::BulkString(Some(String::from("REPLCONF"))),
@@ -101,5 +98,11 @@ pub async fn perform_handshake(mut redis: Redis) -> Redis {
     println!("====== Recieiving Psync Response from Master ======");
     println!("{}", stream_data);
     println!("====== End of Psync Response from Master ==========");
-    redis
+    let mut parser = RespParser::new(stream_data, Arc::clone(&stream));
+    let resync = parser.process_simple_string().await;
+    println!("Remaining amount in stream: {}", &parser.raw_data);
+    let rdb = parser.process_bulk_string().await;
+    println!("Remaining amount in stream: {}", &parser.raw_data);
+
+    parser
 }

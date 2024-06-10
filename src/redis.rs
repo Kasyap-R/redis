@@ -6,7 +6,7 @@ use crate::resp::{resp_parser::RespParser, resp_serializer::serialize_resp_data,
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task;
@@ -26,31 +26,31 @@ pub struct Redis {
 }
 
 impl Redis {
-    async fn handle_conn(&mut self, stream: Arc<RwLock<TcpStream>>) {
+    async fn handle_conn(&mut self, stream: Arc<RwLock<TcpStream>>, parser: Option<RespParser>) {
         let database: Arc<Mutex<HashMap<String, String>>> = Arc::clone(&self.database);
         let config = Arc::clone(&self.config);
         let replica_connections = Arc::clone(&self.replica_connections);
         // Each connection should have a dedicated parser
+        let mut parser = match parser {
+            Some(x) => x,
+            None => RespParser::new(String::from(""), Arc::clone(&stream)),
+        };
         task::spawn(async move {
             loop {
-                // If a stream is a replica stream, don't automatically listen to it
-                // We do have to listen until the handshake is complete though
-                let stream_data: String;
+                // If a stream is a replica stream, don't automatically listen to it after the
+                // handshake
+                let command: Command;
                 if !is_replica(Arc::clone(&replica_connections), Arc::clone(&stream)).await {
-                    stream_data = match read_from_stream(Arc::clone(&stream)).await {
-                        Some(x) => x,
-                        None => break,
+                    if let Some(x) = parser.parse_command().await {
+                        command = x;
+                    } else {
+                        // other side has ended connection
+                        break;
                     }
                 } else {
-                    break;
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    continue;
                 }
-
-                println!("====== Receiving new transmission ======");
-                println!("{}", stream_data,);
-                println!("====== End of new transmission ======");
-
-                let mut parser = RespParser::new(stream_data, Arc::clone(&stream));
-                let command = parser.parse_command();
 
                 // If command is write and this is the master, propagate command to all replicas
                 if config.is_master() && command.is_write() {
@@ -126,19 +126,20 @@ impl Redis {
 
     pub async fn listen(&mut self) -> Result<Self, Box<(dyn std::error::Error + 'static)>> {
         if !self.config.is_master() {
+            let parser = replica::perform_handshake(self).await;
             let master_connection = {
                 match &self.master_connection {
                     Some(x) => Arc::clone(&x),
                     None => panic!("Expected to have master connection on replica"),
                 }
             };
-            self.handle_conn(master_connection).await;
+            self.handle_conn(master_connection, Some(parser)).await;
         }
         loop {
             let (stream, _) = self.listener.accept().await?;
             println!("New stream connected to master: {:?}", stream);
             let stream = Arc::new(RwLock::new(stream));
-            self.handle_conn(Arc::clone(&stream)).await;
+            self.handle_conn(Arc::clone(&stream), None).await;
         }
     }
 
@@ -158,16 +159,6 @@ impl Redis {
             replica_connections: connections,
             master_connection: None,
         })
-    }
-}
-
-async fn read_from_stream(stream: Arc<RwLock<TcpStream>>) -> Option<String> {
-    let mut stream = stream.write().await;
-    let mut buffer: [u8; 1024] = [0; 1024];
-    match stream.read(&mut buffer).await {
-        Ok(0) => None,
-        Ok(_) => Some(String::from_utf8(buffer.to_vec()).expect("Expected valid utf-8 sequence")),
-        Err(e) => panic!("Stream returned error: {:?}", e),
     }
 }
 

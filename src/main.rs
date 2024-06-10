@@ -18,7 +18,6 @@ async fn main() -> Result<(), Box<(dyn std::error::Error + 'static)>> {
 
     let mut redis = Redis::new(Arc::clone(&config), listener).await.expect("");
 
-    redis = redis::replica::perform_handshake(redis).await;
     redis.listen().await?;
 
     Ok(())
