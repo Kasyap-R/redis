@@ -14,17 +14,13 @@ pub struct RespParser {
 
 impl RespParser {
     pub fn new(raw_data: String, stream: Arc<RwLock<TcpStream>>) -> RespParser {
-        let mut instance = RespParser {
+        RespParser {
             raw_data: raw_data.clone(),
             length: raw_data.len(),
             index: 0,
             stream,
-        };
-        instance.initialize();
-        instance
+        }
     }
-
-    fn initialize(&mut self) {}
 
     // Determine the command, and parse the num of arguments
     pub async fn parse_command(&mut self) -> Option<Command> {
@@ -54,13 +50,17 @@ impl RespParser {
             RespType::SimpleString(x) => Command::string_to_command(x, data),
             _ => panic!("Expected string following initial array indicating command"),
         };
-
+        self.reset_data();
         Some(command)
     }
 
     fn check_next_chars(&self, substring: &str) -> bool {
         let substring_len = substring.len();
         if self.index + substring_len <= self.length {
+            println!(
+                "Expected char: {}",
+                &self.raw_data[self.index..self.index + substring.len()]
+            );
             return &self.raw_data[self.index..self.index + substring.len()] == substring;
         }
         false
@@ -72,6 +72,13 @@ impl RespParser {
         } else {
             Err("Expected Char not found")
         }
+    }
+
+    fn reset_data(&mut self) {
+        self.raw_data = self.raw_data[self.index..].to_string();
+        self.raw_data = self.raw_data.trim().to_string();
+        self.index = 0;
+        self.length = self.raw_data.len();
     }
 
     // Command processing functions assume the command indicator byte is present (i.e. they panic
@@ -86,13 +93,20 @@ impl RespParser {
         RespType::SimpleString(simple_string)
     }
 
-    fn reset_data(&mut self) {
-        self.raw_data = self.raw_data[self.index..].to_string();
-        self.index = 0;
-        self.length = self.raw_data.len();
-    }
-
     pub async fn process_bulk_string(&mut self) -> RespType {
+        assert!(self.index == 0);
+        println!(
+            "Data at the point of bulk string processing: {}",
+            &self.raw_data
+        );
+
+        match self.expect_next_char('$') {
+            Ok(_) => (),
+            Err(_) => match self.read_from_stream().await {
+                Ok(_) => (),
+                Err(_) => panic!("Stream ended while reading for bulk string"),
+            },
+        }
         self.expect_next_char('$')
             .expect("Failed to find bulk string indicator byte");
         self.index += 1;
@@ -104,17 +118,25 @@ impl RespParser {
         if length == -1 {
             return RespType::BulkString(None);
         }
+        println!("Calculated length to be: {}", length);
         let bulk_string = self.read_data_till_crlf().await.to_string();
-        if bulk_string.len() as i32 != length {
+        /* if bulk_string.len() as i32 != length {
             panic!("Provided length for bulk string is incorrect");
-        }
+        } */
         self.reset_data();
+        println!("Data after bulk string processing: {}", &self.raw_data);
         RespType::BulkString(Some(bulk_string))
     }
 
     async fn read_data_till_crlf(&mut self) -> String {
         let index_snapshot = self.index;
+        println!(
+            "Snapshot and index + 1: {}",
+            &self.raw_data[self.index..=self.index + 1]
+        );
         let mut remainder = self.raw_data[self.index..].to_string();
+        // TODO this might lead to infinite blocking if the stream isn't sending anything when
+        // index is too high
         while self.index >= self.length || !remainder.contains("\r\n") {
             match self.read_from_stream().await {
                 Ok(_) => (),
@@ -122,36 +144,112 @@ impl RespParser {
             }
             remainder = self.raw_data[self.index..].to_string();
         }
-        if let Some(x) = remainder.find("\r\n") {
-            self.index = x + 2;
-            return self.raw_data[index_snapshot..x].to_string();
-        } else {
-            panic!("Could not find CRLF");
-        }
+        let crlf_index = remainder.find("\r\n").unwrap();
+        self.index = crlf_index + 2;
+        self.raw_data[index_snapshot..=crlf_index].to_owned()
     }
 
-    async fn read_from_stream(&mut self) -> Result<(), ()> {
+    pub async fn read_from_stream(&mut self) -> Result<(), &'static str> {
         let mut stream = self.stream.write().await;
         let mut buffer: [u8; 1024] = [0; 1024];
 
-        let stream_data = match stream.read(&mut buffer).await {
-            Ok(0) => None,
-            Ok(_) => {
-                Some(String::from_utf8(buffer.to_vec()).expect("Expected valid utf-8 sequence"))
+        match stream.read(&mut buffer).await {
+            Ok(0) => {
+                // No more data to read, might indicate a closed connection depending on your context
+                Err("No data read; stream may be closed")
             }
-            Err(e) => panic!("Stream returned error: {:?}", e),
-        };
-        if let Some(ref x) = stream_data {
-            let len = x.len();
-            self.length += len;
-            self.raw_data += x;
-            println!("====== Receiving new transmission ======");
-            println!("{}", x);
-            println!("====== End of new transmission ======");
-            Ok(())
-        } else {
-            Err(())
+            Ok(bytes_read) => {
+                // Correctly handle the number of bytes read
+                let valid_data = &buffer[..bytes_read];
+                let stream_data = String::from_utf8_lossy(valid_data).to_string();
+                self.raw_data += &stream_data;
+                self.length += stream_data.len(); // Update length based on string length, not bytes read
+
+                println!("====== Receiving new transmission ======");
+                println!("{}", stream_data);
+                println!("====== End of new transmission ======");
+
+                Ok(())
+            }
+            Err(_) => {
+                // Return a more descriptive error
+                Err("Error reading from stream")
+            }
         }
+    }
+
+    pub async fn process_rdb_file(&mut self) -> Vec<u8> {
+        assert!(self.index == 0);
+        println!("Data at the point of RDB processing: {}", &self.raw_data);
+
+        match self.expect_next_char('$') {
+            Ok(_) => (),
+            Err(_) => match self.read_from_stream().await {
+                Ok(_) => (),
+                Err(_) => panic!("Stream ended while reading for RDB"),
+            },
+        }
+        self.expect_next_char('$')
+            .expect("Failed to find bulk string indicator byte while reading RDB");
+        self.index += 1;
+        let length: i32 = self
+            .read_data_till_crlf()
+            .await
+            .parse()
+            .expect("Failed to convert length of bulk string to usize");
+        if length <= 0 {
+            panic!("Expected length of RDB file to be > 0");
+        }
+        println!("Calculated length to be: {}", length);
+
+        // Determining bounds of RDB file
+        let mut raw_bytes = self.raw_data[self.index..self.length]
+            .to_owned()
+            .into_bytes();
+        /* for (i, byte) in raw_bytes.clone().into_iter().enumerate() {
+            if i >= (raw_bytes.len() - 1) {
+                // TODO: I really need to figure out when to sto reading and realize a instance is
+                // dead
+                println!("Reading from stream as index is too high");
+                match self.read_from_stream().await {
+                    Ok(_) => (),
+                    Err(_) => panic!("Stream ended while reading for more of RDB"),
+                };
+                continue;
+            }
+            if (i + 1) < raw_bytes.len()
+                && byte == "\r".as_bytes()[0]
+                && raw_bytes[i + 1] == "\n".as_bytes()[0]
+            {
+                println!("Found the CRLF at the end of the RDB");
+                rdb_file = raw_bytes[0..i].to_vec();
+                end_rdb_index = i + 2;
+                break;
+            }
+        } */
+        // We are checking for 88 bytes but we need 88 chars
+        while String::from_utf8_lossy(&raw_bytes).len() < (length as usize - 1) {
+            match self.read_from_stream().await {
+                Ok(_) => (),
+                Err(_) => panic!("Stream ended while reading for more of RDB"),
+            };
+            raw_bytes = self.raw_data[self.index..self.length]
+                .to_owned()
+                .into_bytes();
+        }
+        let rdb_file = raw_bytes[0..length as usize].to_vec();
+        // resetting data
+        let remaining_string =
+            String::from_utf8_lossy(&raw_bytes[length as usize..raw_bytes.len()]);
+        self.raw_data = remaining_string.to_string();
+        self.index = 0;
+        self.length = self.raw_data.len();
+
+        /* if rdb_file.len() as i32 != length {
+            panic!("Provided length for RDB file is incorrect");
+        } */
+        println!("Data after processing RDB file: {}", &self.raw_data);
+        rdb_file
     }
 
     async fn validate_array_length(&mut self, num_args: usize) -> bool {
@@ -178,7 +276,6 @@ impl RespParser {
             };
             if let Some(x) = remainder.as_str().find("\r\n") {
                 num_crlfs -= 1;
-                // We might have to do an
                 self.index = x + 2;
                 remainder = self.raw_data[self.index..].to_string();
             }

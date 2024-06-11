@@ -101,7 +101,7 @@ pub async fn perform_handshake(redis: &mut Redis) -> RespParser {
     let mut parser = RespParser::new(stream_data, Arc::clone(&stream));
     let resync = parser.process_simple_string().await;
     println!("Remaining amount in stream: {}", &parser.raw_data);
-    let rdb = parser.process_bulk_string().await;
+    let rdb = parser.process_rdb_file().await;
     println!("Remaining amount in stream: {}", &parser.raw_data);
 
     parser
