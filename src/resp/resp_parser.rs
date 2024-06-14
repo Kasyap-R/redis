@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 pub struct RespParser {
     pub raw_data: String,
     length: usize,
-    index: usize,
+    pub index: usize,
     stream: Arc<RwLock<TcpStream>>,
 }
 
@@ -42,7 +42,7 @@ impl RespParser {
             match self.raw_data.chars().nth(self.index).unwrap() {
                 '$' => data.push(self.process_bulk_string().await),
                 '+' => data.push(self.process_simple_string().await),
-                _ => panic!("Unsupported RESP data type encountered"),
+                other @ _ => panic!("Unsupported RESP data type encountered: {}", other),
             }
         }
         let command = match command_name {
@@ -94,7 +94,6 @@ impl RespParser {
     }
 
     pub async fn process_bulk_string(&mut self) -> RespType {
-        assert!(self.index == 0);
         println!(
             "Data at the point of bulk string processing: {}",
             &self.raw_data
@@ -130,23 +129,25 @@ impl RespParser {
 
     async fn read_data_till_crlf(&mut self) -> String {
         let index_snapshot = self.index;
+        println!("Index snapshot: {}", index_snapshot);
         println!(
             "Snapshot and index + 1: {}",
             &self.raw_data[self.index..=self.index + 1]
         );
-        let mut remainder = self.raw_data[self.index..].to_string();
+        let mut remainder = self.raw_data[self.index..].to_owned();
         // TODO this might lead to infinite blocking if the stream isn't sending anything when
         // index is too high
-        while self.index >= self.length || !remainder.contains("\r\n") {
+        while !remainder.contains("\r\n") {
             match self.read_from_stream().await {
                 Ok(_) => (),
                 Err(_) => panic!("Stream connection ended while reading to CRLF"),
             }
-            remainder = self.raw_data[self.index..].to_string();
+            remainder = self.raw_data[self.index..].to_owned();
         }
+        println!("The remainder is now: {}", remainder);
         let crlf_index = remainder.find("\r\n").unwrap();
-        self.index = crlf_index + 2;
-        self.raw_data[index_snapshot..=crlf_index].to_owned()
+        self.index += crlf_index + 2;
+        remainder[0..crlf_index].to_owned()
     }
 
     pub async fn read_from_stream(&mut self) -> Result<(), &'static str> {
@@ -180,7 +181,6 @@ impl RespParser {
 
     pub async fn process_rdb_file(&mut self) -> Vec<u8> {
         assert!(self.index == 0);
-        println!("Data at the point of RDB processing: {}", &self.raw_data);
 
         match self.expect_next_char('$') {
             Ok(_) => (),
@@ -196,12 +196,23 @@ impl RespParser {
             .read_data_till_crlf()
             .await
             .parse()
-            .expect("Failed to convert length of bulk string to usize");
+            .expect("Failed to convert length of RDB to usize");
         if length <= 0 {
             panic!("Expected length of RDB file to be > 0");
         }
         println!("Calculated length to be: {}", length);
 
+        println!(
+            "Data at the point of RDB processing: {}",
+            &self.raw_data[self.index..]
+        );
+
+        println!(
+            "Length of RDB FILE: {}",
+            self.raw_data[self.index..self.raw_data.len()]
+                .to_owned()
+                .len()
+        );
         // Determining bounds of RDB file
         let mut raw_bytes = self.raw_data[self.index..self.length]
             .to_owned()
@@ -228,6 +239,7 @@ impl RespParser {
             }
         } */
         // We are checking for 88 bytes but we need 88 chars
+
         while String::from_utf8_lossy(&raw_bytes).len() < (length as usize - 1) {
             match self.read_from_stream().await {
                 Ok(_) => (),
@@ -237,18 +249,34 @@ impl RespParser {
                 .to_owned()
                 .into_bytes();
         }
-        let rdb_file = raw_bytes[0..length as usize].to_vec();
+        // I have to find the byte index that represents the 88th char
+        // from raw data starting and self.index, calculate the length of each char up to the 88th
+        let mut byte_length_of_rdb: usize = 0;
+        for character in self.raw_data[self.index..(self.index as i32 + length) as usize]
+            .to_owned()
+            .chars()
+        {
+            byte_length_of_rdb += character.to_string().len();
+        }
+        byte_length_of_rdb = 121;
+        println!("Calculated RDB length in bytes: {}", byte_length_of_rdb);
+        let rdb_file = raw_bytes[0..byte_length_of_rdb].to_vec();
         // resetting data
         let remaining_string =
-            String::from_utf8_lossy(&raw_bytes[length as usize..raw_bytes.len()]);
+            String::from_utf8_lossy(&raw_bytes[byte_length_of_rdb..raw_bytes.len()]);
         self.raw_data = remaining_string.to_string();
+        self.raw_data = self.raw_data.trim().to_string();
         self.index = 0;
         self.length = self.raw_data.len();
 
         /* if rdb_file.len() as i32 != length {
             panic!("Provided length for RDB file is incorrect");
         } */
-        println!("Data after processing RDB file: {}", &self.raw_data);
+        println!(
+            "Calculated RDB file: {}",
+            String::from_utf8_lossy(&rdb_file)
+        );
+        println!("Data after processing RDB file: \n{}", &self.raw_data);
         rdb_file
     }
 
@@ -285,6 +313,7 @@ impl RespParser {
     }
 
     async fn find_num_args_in_array(&mut self) -> Option<usize> {
+        // TODO: Ensure the first char is an asterisk not just that there IS an asterisk
         let mut remainder = self.raw_data[self.index..].to_string();
         while !remainder.contains("*") {
             match self.read_from_stream().await {

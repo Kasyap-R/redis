@@ -5,7 +5,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock};
 
 use super::construct_rdb;
-use crate::resp::{resp_parser::RespParser, resp_serializer::serialize_resp_data, RespType};
+use crate::resp::{resp_deserializer::RespParser, resp_serializer::serialize_resp_data, RespType};
 use crate::Redis;
 
 pub async fn handle_replconf(stream: Arc<RwLock<TcpStream>>) {
@@ -99,10 +99,8 @@ pub async fn perform_handshake(redis: &mut Redis) -> RespParser {
     println!("{}", stream_data);
     println!("====== End of Psync Response from Master ==========");
     let mut parser = RespParser::new(stream_data, Arc::clone(&stream));
-    let resync = parser.process_simple_string().await;
-    println!("Remaining amount in stream: {}", &parser.raw_data);
-    let rdb = parser.process_rdb_file().await;
-    println!("Remaining amount in stream: {}", &parser.raw_data);
-
+    let resync: String;
+    let rdb: Vec<u8>;
+    (resync, rdb) = parser.parse_handshake().await;
     parser
 }

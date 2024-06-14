@@ -2,7 +2,7 @@ use self::command::Command;
 use self::synchronize::construct_rdb;
 use crate::config::Config;
 use crate::resp::resp_serializer::create_null_string;
-use crate::resp::{resp_parser::RespParser, resp_serializer::serialize_resp_data, RespType};
+use crate::resp::{resp_deserializer::RespParser, resp_serializer::serialize_resp_data, RespType};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,6 +40,7 @@ impl Redis {
                 // If a stream is a replica stream, don't automatically listen to it after the
                 // handshake
                 let command: Command;
+                // Don't listen to replica streams
                 if !is_replica(Arc::clone(&replica_connections), Arc::clone(&stream)).await {
                     if let Some(x) = parser.parse_command().await {
                         command = x;
@@ -192,7 +193,7 @@ async fn handle_echo(message: String, stream: Arc<RwLock<TcpStream>>) {
 }
 
 async fn handle_ping(stream: Arc<RwLock<TcpStream>>) {
-    let response = serialize_resp_data(RespType::SimpleString(String::from("Pong")));
+    let response = serialize_resp_data(RespType::SimpleString(String::from("PONG")));
     let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }
@@ -217,7 +218,7 @@ async fn handle_set(
             db.remove(&key_clone);
         });
     }
-    let response = serialize_resp_data(RespType::SimpleString(String::from("Ok")));
+    let response = serialize_resp_data(RespType::SimpleString(String::from("OK")));
     let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }

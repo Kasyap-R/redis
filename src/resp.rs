@@ -1,3 +1,4 @@
+pub mod resp_deserializer;
 pub mod resp_parser;
 pub mod resp_serializer;
 
