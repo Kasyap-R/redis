@@ -91,11 +91,16 @@ impl Redis {
                     Command::Info(arg) => {
                         handle_info(arg, Arc::clone(&config), Arc::clone(&stream)).await;
                     }
-                    Command::ReplConf(_arg1, _arg2) => {
-                        if !config.is_master() {
+                    Command::ReplConf(arg1, _arg2) => {
+                        // Only a problem for certain types of REPLCONF
+
+                        /* if !config.is_master() {
                             panic!("Recieving REPLCONF command as a replica, should exclusively be sent by replicas to masters");
-                        }
-                        replica::handle_replconf(Arc::clone(&stream)).await;
+                        } */
+                        match arg1.to_lowercase().as_str() {
+                            "getack" => replica::handle_replconf_getack(Arc::clone(&stream)).await,
+                            _ => replica::handle_replconf(Arc::clone(&stream)).await,
+                        };
                     }
                     Command::Psync(replication_id, offset) => {
                         if !config.is_master() {

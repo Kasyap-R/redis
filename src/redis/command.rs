@@ -1,3 +1,5 @@
+use std::option;
+
 use crate::resp::RespType;
 
 #[derive(Debug)]
@@ -7,7 +9,7 @@ pub enum Command {
     Set(String, String, Option<u64>),
     Get(String),
     Info(String),
-    ReplConf(String, String),
+    ReplConf(String, Option<String>),
     Psync(String, String),
 }
 
@@ -69,22 +71,25 @@ impl Command {
 
     fn handle_replconf(args: Vec<RespType>) -> Command {
         let len_args = args.len();
-        let mut strings: [String; 2] = Default::default();
-        if len_args != 2 {
+        if !(1..=2).contains(&len_args) {
             panic!("Inappropriate Number of arguments for the REPLCONF command");
         }
-        for (index, arg) in args.iter().take(2).enumerate() {
-            match arg {
-                RespType::BulkString(x) => {
-                    strings[index] = String::from(x.as_ref().unwrap());
+        let arg1 = match &args[0] {
+            RespType::BulkString(x) => String::from(x.as_ref().unwrap()),
+            RespType::SimpleString(x) => String::from(x),
+            _ => panic!("Arguments for REPLCONF need to be strings"),
+        };
+        let mut optional_arg = None;
+        if len_args == 2 {
+            optional_arg = {
+                match &args[1] {
+                    RespType::BulkString(x) => Some(String::from(x.as_ref().unwrap())),
+                    RespType::SimpleString(x) => Some(String::from(x)),
+                    _ => panic!("Arguments for REPLCONF need to be strings"),
                 }
-                RespType::SimpleString(x) => {
-                    strings[index] = String::from(x);
-                }
-                _ => panic!("Arguments for REPLCONF need to be strings"),
             }
         }
-        Command::ReplConf(strings[0].clone(), strings[1].clone())
+        Command::ReplConf(arg1, optional_arg)
     }
     pub fn string_to_command(command: String, args: Vec<RespType>) -> Command {
         let len_args = args.len();

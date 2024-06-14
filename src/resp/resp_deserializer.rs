@@ -30,17 +30,13 @@ impl RespParser {
         if !self.validate_array_length(num_args).await {
             return None;
         }
-        println!("Data before parsing command: {}", self.data);
         // Assume command_name will always be provided as a bulk string
         let command_name = self.parse_bulk_string();
         let mut command_data: Vec<RespType> = Vec::new();
-        println!("Num Args: {}", num_args);
         for _ in 1..=(num_args - 1) {
             if self.index > self.data.len() {
                 panic!("Index is >= length of data while parsing arguments");
             }
-            /* println!("Index before checking char {}", self.index);
-            println!("Length of data: {}", self.data.len()); */
             match self.data.chars().nth(self.index).unwrap() {
                 '$' => command_data.push(self.parse_bulk_string()),
                 '+' => command_data.push(self.parse_bulk_string()),
@@ -52,7 +48,6 @@ impl RespParser {
             _ => panic!("Expected Command Name to be provided as a bulk string"),
         };
         self.reset_data();
-        println!("Data after parsing command: {}", self.data);
 
         Some(command)
     }
@@ -63,13 +58,10 @@ impl RespParser {
         while !self.data.contains("\r\n") {
             self.read_data_from_stream().await;
         }
-        println!("Data before parsing simple string: {}", self.data);
         let simple = self.parse_simple_string();
         self.reset_data();
-        println!("Data after parsing simple string: {}", self.data);
 
         // Then parse the RDB file
-        println!("Data at point of RDB processing: {}", self.data);
         while !self.data.contains("\r\n") {
             self.read_data_from_stream().await;
         }
@@ -84,7 +76,7 @@ impl RespParser {
         let mut remainder = &self.data[self.index..];
 
         println!("Length of RDB: {}", length);
-        println!("Lenght of remainder: {}", remainder.len());
+        println!("Length of remainder: {}", remainder.len());
         // Now we must read the next x chars
         let num_bytes: usize = 120;
         while remainder.len() < length {
@@ -174,10 +166,6 @@ impl RespParser {
             }
         }
         true
-    }
-
-    async fn parse_rdb_file(&mut self) -> Vec<u8> {
-        Vec::new()
     }
 
     fn parse_simple_string(&mut self) -> RespType {
