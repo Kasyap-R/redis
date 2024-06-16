@@ -9,31 +9,17 @@ pub enum Command {
     Info(String),
     ReplConf(String, Option<String>),
     Psync(String, String),
+    Wait(i32, i32),
 }
 
 impl Command {
-    /* pub fn is_repl_ack(&self) -> bool {
-        match self {
-            Self::ReplConf(arg1, _) => {
-                if arg1.to_lowercase() == "getack" {
-                    return true;
-                }
-            }
-            _ => return false,
-        }
-        false
-    } */
     pub fn is_write(&self) -> bool {
         match self {
-            Self::Ping => false,
-            Self::Echo(_) => false,
             Self::Set(_, _, _) => true,
-            Self::Get(_) => false,
-            Self::Info(_) => false,
-            Self::ReplConf(_, _) => false,
-            Self::Psync(_, _) => false,
+            _ => false,
         }
     }
+
     fn handle_set(args: Vec<RespType>) -> Command {
         let len_args = args.len();
         let mut strings: [String; 2] = Default::default();
@@ -100,6 +86,29 @@ impl Command {
         }
         Command::ReplConf(arg1, optional_arg)
     }
+
+    fn handle_wait(args: Vec<RespType>) -> Command {
+        if args.len() != 2 {
+            panic!("Expected wait to only have 2 arguments");
+        }
+        let mut wait_args: Vec<i32> = Vec::new();
+        for arg in args {
+            let arg_as_num: i32 = match arg {
+                RespType::SimpleString(x) => x
+                    .parse::<i32>()
+                    .expect("Could not convert wait argument to i32"),
+                RespType::BulkString(x) => x
+                    .unwrap()
+                    .parse::<i32>()
+                    .expect("Could not convert wait argument to i32"),
+                _ => panic!("Arugments for WAIT were expected to be strings"),
+            };
+
+            wait_args.push(arg_as_num);
+        }
+        Command::Wait(wait_args[0], wait_args[1])
+    }
+
     pub fn string_to_command(command: String, args: Vec<RespType>) -> Command {
         let len_args = args.len();
         match command.to_lowercase().as_str() {
@@ -158,6 +167,7 @@ impl Command {
                 }
                 Command::Psync(strings[0].clone(), strings[1].clone())
             }
+            "wait" => Command::handle_wait(args),
 
             other @ _ => panic!("No support for command type: {}", other),
         }

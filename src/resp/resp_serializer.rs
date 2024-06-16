@@ -10,6 +10,10 @@ fn serialize_simple_string(data: String) -> String {
     String::from(&format!("+{}\r\n", data))
 }
 
+fn serialize_integer(data: i64) -> String {
+    String::from(&format!(":{}\r\n", data))
+}
+
 fn serialize_array(data: Vec<RespType>) -> String {
     let length = data.len();
     let mut serialized = String::from(&format!("*{}\r\n", length));
@@ -24,6 +28,7 @@ pub fn serialize_resp_data(data: RespType) -> String {
         RespType::BulkString(x) => serialize_bulk_string(x.as_ref().unwrap().to_string()),
         RespType::Array(x) => serialize_array(x),
         RespType::SimpleString(x) => serialize_simple_string(x.to_string()),
+        RespType::Integer(x) => serialize_integer(x),
         other @ _ => panic!("Serialization isn't support for {:?}", other),
     };
     serialized

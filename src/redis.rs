@@ -137,6 +137,12 @@ impl Redis {
                             None => panic!("Master should have a hashmap dedicated to storing connections to replicas"),
                         }
                     }
+                    Command::Wait(num_replicas, timeout) => {
+                        if !config.is_master() {
+                            panic!("Replica recieved WAIT command - only meant for MASTER");
+                        }
+                        handle_wait(Arc::clone(&stream), timeout, num_replicas).await;
+                    }
                     _ => panic!("Unsupported Command"),
                 };
             }
@@ -199,6 +205,12 @@ async fn is_stream_replica(
         }
     }
     false
+}
+
+async fn handle_wait(stream: Arc<RwLock<TcpStream>>, _timeout: i32, _num_replicas: i32) {
+    let response = serialize_resp_data(RespType::Integer(0));
+    let mut stream = stream.write().await;
+    let _ = stream.write_all(response.as_bytes()).await;
 }
 
 async fn handle_echo(message: String, stream: Arc<RwLock<TcpStream>>, is_master: bool) {
