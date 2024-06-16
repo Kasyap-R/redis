@@ -14,11 +14,11 @@ pub async fn handle_replconf(stream: Arc<RwLock<TcpStream>>) {
     let _ = stream.write_all(response.as_bytes()).await;
 }
 
-pub async fn handle_replconf_getack(stream: Arc<RwLock<TcpStream>>) {
+pub async fn handle_replconf_getack(stream: Arc<RwLock<TcpStream>>, bytes_processed: usize) {
     let response = RespType::Array(vec![
         RespType::BulkString(Some(String::from("REPLCONF"))),
         RespType::BulkString(Some(String::from("ACK"))),
-        RespType::BulkString(Some(String::from("0"))),
+        RespType::BulkString(Some(bytes_processed.to_string())),
     ]);
 
     let serialized_response = serialize_resp_data(response);

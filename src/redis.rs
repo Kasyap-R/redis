@@ -35,15 +35,20 @@ impl Redis {
             Some(x) => x,
             None => RespParser::new(String::from(""), Arc::clone(&stream)),
         };
+        let mut bytes_processed = 0;
         task::spawn(async move {
             loop {
                 // If a stream is a replica stream, don't automatically listen to it after the
                 // handshake
                 let command: Command;
                 // Don't listen to replica streams
-                if !is_replica(Arc::clone(&replica_connections), Arc::clone(&stream)).await {
-                    if let Some(x) = parser.parse_command().await {
-                        command = x;
+                if !is_stream_replica(Arc::clone(&replica_connections), Arc::clone(&stream)).await {
+                    if let Some((comm, bytes)) = parser.parse_command().await {
+                        // Increase bytes processed every time we process a command
+                        command = comm;
+                        if !config.is_master() {
+                            bytes_processed += bytes;
+                        }
                     } else {
                         // other side has ended connection
                         break;
@@ -70,10 +75,10 @@ impl Redis {
 
                 match command {
                     Command::Echo(message) => {
-                        handle_echo(message, Arc::clone(&stream)).await;
+                        handle_echo(message, Arc::clone(&stream), config.is_master()).await;
                     }
                     Command::Ping => {
-                        handle_ping(Arc::clone(&stream)).await;
+                        handle_ping(Arc::clone(&stream), config.is_master()).await;
                     }
                     Command::Set(key, value, expiry) => {
                         handle_set(
@@ -82,6 +87,7 @@ impl Redis {
                             expiry,
                             Arc::clone(&stream),
                             Arc::clone(&database),
+                            config.is_master(),
                         )
                         .await;
                     }
@@ -93,12 +99,19 @@ impl Redis {
                     }
                     Command::ReplConf(arg1, _arg2) => {
                         // Only a problem for certain types of REPLCONF
-
                         /* if !config.is_master() {
                             panic!("Recieving REPLCONF command as a replica, should exclusively be sent by replicas to masters");
                         } */
+
                         match arg1.to_lowercase().as_str() {
-                            "getack" => replica::handle_replconf_getack(Arc::clone(&stream)).await,
+                            "getack" => {
+                                println!("Handling GETACK");
+                                replica::handle_replconf_getack(
+                                    Arc::clone(&stream),
+                                    bytes_processed - 37,
+                                )
+                                .await;
+                            }
                             _ => replica::handle_replconf(Arc::clone(&stream)).await,
                         };
                     }
@@ -169,7 +182,7 @@ impl Redis {
 }
 
 // TODO: Add memoization for efficiency as we scale
-async fn is_replica(
+async fn is_stream_replica(
     replica_connections: Arc<RwLock<Option<HashMap<i32, Arc<RwLock<TcpStream>>>>>>,
     stream: Arc<RwLock<TcpStream>>,
 ) -> bool {
@@ -188,19 +201,23 @@ async fn is_replica(
     false
 }
 
-async fn handle_echo(message: String, stream: Arc<RwLock<TcpStream>>) {
+async fn handle_echo(message: String, stream: Arc<RwLock<TcpStream>>, is_master: bool) {
     let response = serialize_resp_data(RespType::BulkString(Some(String::from(format!(
         "{}",
         message
     )))));
-    let mut stream = stream.write().await;
-    let _ = stream.write_all(response.as_bytes()).await;
+    if is_master {
+        let mut stream = stream.write().await;
+        let _ = stream.write_all(response.as_bytes()).await;
+    }
 }
 
-async fn handle_ping(stream: Arc<RwLock<TcpStream>>) {
+async fn handle_ping(stream: Arc<RwLock<TcpStream>>, is_master: bool) {
     let response = serialize_resp_data(RespType::SimpleString(String::from("PONG")));
-    let mut stream = stream.write().await;
-    let _ = stream.write_all(response.as_bytes()).await;
+    if is_master {
+        let mut stream = stream.write().await;
+        let _ = stream.write_all(response.as_bytes()).await;
+    }
 }
 
 async fn handle_set(
@@ -209,6 +226,7 @@ async fn handle_set(
     expiry: Option<u64>,
     stream: Arc<RwLock<TcpStream>>,
     db: Arc<Mutex<HashMap<String, String>>>,
+    is_master: bool,
 ) {
     {
         let mut db = db.lock().await;
@@ -224,8 +242,10 @@ async fn handle_set(
         });
     }
     let response = serialize_resp_data(RespType::SimpleString(String::from("OK")));
-    let mut stream = stream.write().await;
-    let _ = stream.write_all(response.as_bytes()).await;
+    if is_master {
+        let mut stream = stream.write().await;
+        let _ = stream.write_all(response.as_bytes()).await;
+    }
 }
 
 async fn handle_get(
@@ -243,17 +263,14 @@ async fn handle_get(
 }
 
 async fn handle_info(_arg: String, config: Arc<Config>, stream: Arc<RwLock<TcpStream>>) {
-    let response = match config.role.as_str() {
-        "master" => serialize_resp_data(RespType::BulkString(Some(format!(
+    let response = match config.is_master() {
+        true => serialize_resp_data(RespType::BulkString(Some(format!(
             "role:{}\nmaster_replid:{}\nmaster_repl_offset:{}\n",
             config.role,
             config.master_replid.as_ref().unwrap(),
             config.master_repl_offset.as_ref().unwrap()
         )))),
-        "slave" => {
-            serialize_resp_data(RespType::BulkString(format!("role:{}", config.role).into()))
-        }
-        _ => panic!("Redis instance must be either slave or master"),
+        false => serialize_resp_data(RespType::BulkString(format!("role:{}", config.role).into())),
     };
     let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;

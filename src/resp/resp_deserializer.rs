@@ -20,7 +20,7 @@ impl RespParser {
             stream,
         }
     }
-    pub async fn parse_command(&mut self) -> Option<Command> {
+    pub async fn parse_command(&mut self) -> Option<(Command, usize)> {
         assert!(self.index == 0);
         let num_args = match self.find_num_args_in_array().await {
             Some(x) => x,
@@ -30,6 +30,8 @@ impl RespParser {
         if !self.validate_array_length(num_args).await {
             return None;
         }
+        let data_before_processing = self.data.clone();
+
         // Assume command_name will always be provided as a bulk string
         let command_name = self.parse_bulk_string();
         let mut command_data: Vec<RespType> = Vec::new();
@@ -48,8 +50,10 @@ impl RespParser {
             _ => panic!("Expected Command Name to be provided as a bulk string"),
         };
         self.reset_data();
-
-        Some(command)
+        let bytes_processed = data_before_processing.len() - self.data.len();
+        /* println!("Data before processing: {}", data_before_processing);
+        println!("Data after processing: {}", self.data); */
+        return Some((command, bytes_processed));
     }
 
     pub async fn parse_handshake(&mut self) -> (String, Vec<u8>) {
@@ -144,6 +148,7 @@ impl RespParser {
         }
         Some(num_args as usize)
     }
+
     async fn validate_array_length(&mut self, num_args: usize) -> bool {
         if num_args == 0 {
             panic!("Expected num_args to be greater than zero");
@@ -163,6 +168,8 @@ impl RespParser {
                 num_crlfs -= 1;
                 validating_index += x + 2;
                 remainder = self.data[validating_index..].to_owned();
+            } else {
+                self.read_data_from_stream().await;
             }
         }
         true

@@ -1,5 +1,3 @@
-use std::option;
-
 use crate::resp::RespType;
 
 #[derive(Debug)]
@@ -14,6 +12,17 @@ pub enum Command {
 }
 
 impl Command {
+    /* pub fn is_repl_ack(&self) -> bool {
+        match self {
+            Self::ReplConf(arg1, _) => {
+                if arg1.to_lowercase() == "getack" {
+                    return true;
+                }
+            }
+            _ => return false,
+        }
+        false
+    } */
     pub fn is_write(&self) -> bool {
         match self {
             Self::Ping => false,
