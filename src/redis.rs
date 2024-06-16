@@ -2,16 +2,19 @@ use self::command::Command;
 use self::synchronize::construct_rdb;
 use crate::config::Config;
 use crate::resp::resp_serializer::create_null_string;
-use crate::resp::{resp_deserializer::RespParser, resp_serializer::serialize_resp_data, RespType};
+use crate::resp::{
+    resp_deserializer::RespParser,
+    resp_serializer::{serialize_command, serialize_resp_data},
+    RespType,
+};
 
 use std::collections::HashMap;
-use std::num;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task;
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, timeout, Duration, Instant};
 
 pub mod command;
 pub mod replica;
@@ -36,7 +39,8 @@ impl Redis {
             Some(x) => x,
             None => RespParser::new(String::from(""), Arc::clone(&stream)),
         };
-        let mut bytes_processed = 0;
+        let mut total_bytes_processed = 0;
+        let mut write_bytes_processed = 0;
         task::spawn(async move {
             loop {
                 // If a stream is a replica stream, don't automatically listen to it after the
@@ -48,7 +52,9 @@ impl Redis {
                         // Increase bytes processed every time we process a command
                         command = comm;
                         if !config.is_master() {
-                            bytes_processed += bytes;
+                            total_bytes_processed += bytes;
+                        } else if command.is_write() {
+                            write_bytes_processed += bytes;
                         }
                     } else {
                         // other side has ended connection
@@ -63,8 +69,7 @@ impl Redis {
                 if config.is_master() && command.is_write() {
                     let replica_connections = replica_connections.read().await;
                     if let Some(ref connections) = *replica_connections {
-                        for (_port, replica_stream) in connections.iter() {
-                            println!("Found replica stream");
+                        for (fd, replica_stream) in connections.iter() {
                             synchronize::propagate_command_to_replica(
                                 Arc::clone(&replica_stream),
                                 &command,
@@ -109,7 +114,7 @@ impl Redis {
                                 println!("Handling GETACK");
                                 replica::handle_replconf_getack(
                                     Arc::clone(&stream),
-                                    bytes_processed - 37,
+                                    total_bytes_processed - 37,
                                 )
                                 .await;
                             }
@@ -140,15 +145,16 @@ impl Redis {
                     }
                     Command::Wait(replicas_to_wait_for, timeout) => {
                         if !config.is_master() {
-                            panic!("Replica recieved WAIT command - only meant for MASTER");
+                            panic!(
+                                "Replica recieved WAIT command as replica - only meant for MASTER"
+                            );
                         }
-                        let replica_connections = replica_connections.read().await;
-                        let num_replicas = replica_connections.as_ref().unwrap().len();
                         handle_wait(
+                            Arc::clone(&replica_connections),
                             Arc::clone(&stream),
                             timeout,
                             replicas_to_wait_for,
-                            num_replicas,
+                            write_bytes_processed,
                         )
                         .await;
                     }
@@ -217,12 +223,81 @@ async fn is_stream_replica(
 }
 
 async fn handle_wait(
+    replica_connections: Arc<RwLock<Option<HashMap<i32, Arc<RwLock<TcpStream>>>>>>,
     stream: Arc<RwLock<TcpStream>>,
-    _timeout: i32,
+    timeout: i32,
     _replicas_to_wait_for: i32,
-    num_curr_replicas: usize,
+    write_bytes_processed: usize,
 ) {
-    let response = serialize_resp_data(RespType::Integer(num_curr_replicas as i64));
+    // NOTE: handle_wait should only be called if a previous command was a write
+    // Implement a check for that later
+
+    // Send getAck and if the response is less than the write_bytes_processed, we don't count that
+    // as a replica which has processed the command
+
+    let get_ack_command = Command::ReplConf(String::from("GETACK"), Some(String::from("*")));
+    let get_ack_string = serialize_command(&get_ack_command);
+    let up_to_date_replicas: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+    let total_responses = Arc::clone(&up_to_date_replicas);
+    let timeout = Duration::from_millis(timeout as u64);
+    let start_time = Instant::now();
+    let handle = task::spawn(async move {
+        let replica_connections = replica_connections.read().await;
+        if let Some(ref connections) = *replica_connections {
+            let mut replica_fds: Vec<i32> = connections.keys().copied().collect();
+            replica_fds.sort();
+            println!("Sorted list of replica fd's: {:?}", replica_fds);
+            for fd in replica_fds {
+                println!("Handling FD {}", fd);
+                match connections.get(&fd) {
+                    Some(replica_stream) => {
+                        // TODO: Store a parser instead of a stream in replica_connections
+                        let mut parser =
+                            RespParser::new(String::from(""), Arc::clone(&replica_stream));
+                        {
+                            let mut replica_stream = replica_stream.write().await;
+                            let _ = replica_stream.write_all(get_ack_string.as_bytes()).await;
+                            println!("Sent GETACK to {:?}", replica_stream);
+                        }
+                        println!("About to read response from FD: {}", fd);
+
+                        let response = match parser.parse_command().await {
+                            Some((command, _bytes_read)) => command,
+                            None => panic!("Expected response to GETACK"),
+                        };
+                        println!("Read response from FD: {}", fd);
+
+                        match response {
+                            Command::ReplConf(arg1, x) => {
+                                if arg1.as_str() == "ACK" {
+                                    if let Some(byte_processed_by_repliac) = x {
+                                        if byte_processed_by_repliac.parse::<usize>().unwrap()
+                                            >= write_bytes_processed
+                                        {
+                                            let mut total_responses = total_responses.lock().await;
+                                            *total_responses += 1;
+                                        }
+                                    }
+                                } else {
+                                    panic!("Expected REPLCFONG Response to GETACK to be ACK");
+                                }
+                            }
+                            _ => panic!("Expected REPLCONF response to GETACK"),
+                        }
+                        println!("Handled FD: {}", fd);
+                    }
+                    None => panic!("THIS SHOULD LITERALLY NEVER HAPPPEN"),
+                }
+                /* if start_time.elapsed() >= timeout {
+                    break;
+                } */
+            }
+        }
+    });
+    let _ = handle.await;
+
+    let up_to_date_replicas = up_to_date_replicas.lock().await;
+    let response = serialize_resp_data(RespType::Integer(up_to_date_replicas.to_owned() as i64));
     let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }

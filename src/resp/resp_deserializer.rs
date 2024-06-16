@@ -51,8 +51,6 @@ impl RespParser {
         };
         self.reset_data();
         let bytes_processed = data_before_processing.len() - self.data.len();
-        /* println!("Data before processing: {}", data_before_processing);
-        println!("Data after processing: {}", self.data); */
         return Some((command, bytes_processed));
     }
 

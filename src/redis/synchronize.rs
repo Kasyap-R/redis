@@ -11,17 +11,14 @@ extern crate base64;
 const RDB_B64: &str = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog==";
 
 pub async fn propagate_command_to_replica(stream: Arc<RwLock<TcpStream>>, command: &Command) {
-    println!("Propagation Contents: \n{:?}", command);
     let serialized_command = serialize_command(command);
     let mut stream = stream.write().await;
-    println!("Propagation Target: \n{:?}", stream);
     if let Err(e) = stream.write_all(serialized_command.as_bytes()).await {
         println!("Failed to write to stream: {}", e);
     }
     if let Err(e) = stream.flush().await {
         println!("Failed to flush stream: {}", e);
     }
-    println!("Finished Propagating");
 }
 
 pub fn construct_rdb(_database: Arc<Mutex<HashMap<String, String>>>) -> (String, Vec<u8>) {

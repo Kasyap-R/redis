@@ -53,6 +53,16 @@ pub fn serialize_command(command: &Command) -> String {
             let x = serialize_resp_data(RespType::Array(serialized));
             x
         }
+        Command::ReplConf(arg1, arg2_optional) => {
+            let mut serialized: Vec<RespType> = vec![
+                RespType::BulkString(Some(String::from("REPLCONF"))),
+                RespType::BulkString(Some(arg1.to_owned())),
+            ];
+            if let Some(arg2) = arg2_optional {
+                serialized.push(RespType::BulkString(Some(String::from(arg2))));
+            };
+            serialize_resp_data(RespType::Array(serialized))
+        }
         other @ _ => panic!("Serialization unsupported for {:?}", other),
     }
 }
