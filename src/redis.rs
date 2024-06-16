@@ -5,6 +5,7 @@ use crate::resp::resp_serializer::create_null_string;
 use crate::resp::{resp_deserializer::RespParser, resp_serializer::serialize_resp_data, RespType};
 
 use std::collections::HashMap;
+use std::num;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -137,11 +138,19 @@ impl Redis {
                             None => panic!("Master should have a hashmap dedicated to storing connections to replicas"),
                         }
                     }
-                    Command::Wait(num_replicas, timeout) => {
+                    Command::Wait(replicas_to_wait_for, timeout) => {
                         if !config.is_master() {
                             panic!("Replica recieved WAIT command - only meant for MASTER");
                         }
-                        handle_wait(Arc::clone(&stream), timeout, num_replicas).await;
+                        let replica_connections = replica_connections.read().await;
+                        let num_replicas = replica_connections.as_ref().unwrap().len();
+                        handle_wait(
+                            Arc::clone(&stream),
+                            timeout,
+                            replicas_to_wait_for,
+                            num_replicas,
+                        )
+                        .await;
                     }
                     _ => panic!("Unsupported Command"),
                 };
@@ -207,8 +216,13 @@ async fn is_stream_replica(
     false
 }
 
-async fn handle_wait(stream: Arc<RwLock<TcpStream>>, _timeout: i32, _num_replicas: i32) {
-    let response = serialize_resp_data(RespType::Integer(0));
+async fn handle_wait(
+    stream: Arc<RwLock<TcpStream>>,
+    _timeout: i32,
+    _replicas_to_wait_for: i32,
+    num_curr_replicas: usize,
+) {
+    let response = serialize_resp_data(RespType::Integer(num_curr_replicas as i64));
     let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }
