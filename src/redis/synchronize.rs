@@ -1,4 +1,4 @@
-use crate::redis::command::Command;
+use crate::redis::commands::Command;
 use crate::resp::resp_serializer::serialize_command;
 use std::collections::HashMap;
 use std::sync::Arc;

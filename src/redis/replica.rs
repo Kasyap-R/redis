@@ -47,6 +47,26 @@ pub async fn handle_psync(
     }
 }
 
+// TODO: Add memoization for efficiency as we scale
+pub async fn is_stream_replica(
+    replica_connections: Arc<RwLock<Option<HashMap<i32, Arc<RwLock<TcpStream>>>>>>,
+    stream: Arc<RwLock<TcpStream>>,
+) -> bool {
+    use std::os::unix::io::AsRawFd;
+
+    let replica_connections = replica_connections.write().await;
+    if let Some(ref connections) = *replica_connections {
+        let stream = stream.read().await;
+        let stream_fd = stream.as_raw_fd();
+        for (replica_fd, _replica_stream) in connections.iter() {
+            if stream_fd == *replica_fd {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 async fn send_and_recieve(
     stream: Arc<RwLock<TcpStream>>,
     message: &str,
@@ -65,7 +85,6 @@ async fn send_and_recieve(
     Ok(response)
 }
 pub async fn perform_handshake(redis: &mut Redis) -> RespParser {
-    use crate::resp::RespType;
     let ping: RespType = RespType::Array(vec![RespType::BulkString(Some(String::from("PING")))]);
     let repl_port = RespType::Array(vec![
         RespType::BulkString(Some(String::from("REPLCONF"))),

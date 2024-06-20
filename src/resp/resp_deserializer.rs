@@ -1,5 +1,6 @@
 use super::RespType;
-use crate::redis::command::Command;
+use crate::redis::commands::{self, Command};
+
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
@@ -12,7 +13,10 @@ pub struct RespParser {
 }
 
 impl RespParser {
-    // Public Interface
+    // ----------------- Public ------------------
+    // |                                         |
+    // -------------------------------------------
+
     pub fn new(data: String, stream: Arc<RwLock<TcpStream>>) -> RespParser {
         RespParser {
             data,
@@ -20,6 +24,7 @@ impl RespParser {
             stream,
         }
     }
+
     pub async fn parse_command(&mut self) -> Option<(Command, usize)> {
         assert!(self.index == 0);
         let num_args = match self.find_num_args_in_array().await {
@@ -46,7 +51,7 @@ impl RespParser {
             }
         }
         let command = match command_name {
-            RespType::BulkString(x) => Command::string_to_command(x.unwrap(), command_data),
+            RespType::BulkString(x) => commands::args_to_command(&x.unwrap(), command_data),
             _ => panic!("Expected Command Name to be provided as a bulk string"),
         };
         self.reset_data();
@@ -63,36 +68,11 @@ impl RespParser {
         let simple = self.parse_simple_string();
         self.reset_data();
 
-        // Then parse the RDB file
-        while !self.data.contains("\r\n") {
-            self.read_data_from_stream().await;
-        }
-        if !self.check_next_substring("$") {
-            panic!("Expected bulk string indicator byte before RDB file");
-        }
-        self.index += 1;
-        let length: usize = self
-            .read_to_crlf()
-            .parse()
-            .expect("Failed to convert RDB length to usize");
-        let mut remainder = &self.data[self.index..];
-
-        println!("Length of RDB: {}", length);
-        println!("Length of remainder: {}", remainder.len());
-        // Now we must read the next x chars
-        let num_bytes: usize = 120;
-        while remainder.len() < length {
-            self.read_data_from_stream().await;
-            remainder = &self.data[self.index..];
-        }
-
-        let rdb = remainder[0..num_bytes].as_bytes().to_vec();
-        self.index += num_bytes;
-
         let resync = match simple {
             RespType::SimpleString(x) => x,
             _ => panic!("Expected parse_simple_string to return a simple string"),
         };
+        let rdb = self.parse_rdb_file().await;
         self.reset_data();
         println!("Data after parsing RDB: {}", self.data);
         println!("Length of data after parsing RDB: {}", self.data.len());
@@ -125,13 +105,41 @@ impl RespParser {
         }
     }
 
-    // Function assumes the data has been reset and leads with an asterisk
-    async fn find_num_args_in_array(&mut self) -> Option<usize> {
-        // I can change this to work from current index but for now I just want to check
-        // my assumption that it will only be called by parse_command
-        assert!(self.index == 0);
+    async fn parse_rdb_file(&mut self) -> Vec<u8> {
         while !self.data.contains("\r\n") {
             self.read_data_from_stream().await;
+        }
+        if !self.check_next_substring("$") {
+            panic!("Expected bulk string indicator byte before RDB file");
+        }
+        self.index += 1;
+        let length: usize = self
+            .read_to_crlf()
+            .parse()
+            .expect("Failed to convert RDB length to usize");
+        let mut remainder = &self.data[self.index..];
+
+        println!("Length of RDB: {}", length);
+        println!("Length of remainder: {}", remainder.len());
+        // Now we must read the next x chars
+        // TODO: Stop hardcoding RDB size
+        let num_bytes: usize = 120;
+        while remainder.len() < length {
+            self.read_data_from_stream().await;
+            remainder = &self.data[self.index..];
+        }
+
+        let rdb = remainder[0..num_bytes].as_bytes().to_vec();
+        self.index += num_bytes;
+        rdb
+    }
+
+    // Function assumes the data has been reset and leads with an asterisk
+    async fn find_num_args_in_array(&mut self) -> Option<usize> {
+        let mut remainder = self.data[self.index..].to_owned();
+        while !remainder.contains("\r\n") {
+            self.read_data_from_stream().await;
+            remainder = self.data[self.index..].to_owned();
         }
         if !self.check_next_substring("*") {
             panic!("Expected first character to be * while finding num args");
