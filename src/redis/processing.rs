@@ -9,6 +9,7 @@ use crate::resp::{
 };
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -88,6 +89,34 @@ pub async fn handle_info(_arg: String, config: Arc<Config>, stream: Arc<RwLock<T
             serialize_resp_data(RespType::BulkString(format!("role:{}", config.role).into()))
         }
     };
+    let mut stream = stream.write().await;
+    let _ = stream.write_all(response.as_bytes()).await;
+}
+
+pub async fn handle_config_get(
+    stream: Arc<RwLock<TcpStream>>,
+    config: Arc<Config>,
+    path_type: String,
+) {
+    let path: String = match path_type.to_lowercase().as_str() {
+        "dir" => config
+            .rdb_dir
+            .as_ref()
+            .and_then(|p| p.to_str())
+            .expect("Failed to convert path to string")
+            .to_string(),
+        "dbfilename" => config
+            .rdb_filename
+            .as_ref()
+            .and_then(|p| p.to_str())
+            .expect("Failed to convert path to string")
+            .to_string(),
+        other @ _ => panic!("Unsupported argument for CONFIG GET: {}", other),
+    };
+    let response = serialize_resp_data(RespType::Array(vec![
+        RespType::BulkString(Some(path_type)),
+        RespType::BulkString(Some(path)),
+    ]));
     let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }

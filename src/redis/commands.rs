@@ -10,6 +10,7 @@ pub enum Command {
     ReplConf(String, Option<String>),
     Psync(String, String),
     Wait(i32, i32),
+    ConfigGet(String),
 }
 
 impl Command {
@@ -32,6 +33,7 @@ pub fn args_to_command(command_name: &str, args: Vec<RespType>) -> Command {
         "replconf" => create_replconf(args),
         "psync" => create_psync(args),
         "wait" => create_wait(args),
+        "config" => create_config(args),
         other @ _ => panic!("No support for command type: {}", other),
     }
 }
@@ -172,4 +174,21 @@ fn create_wait(args: Vec<RespType>) -> Command {
         }
     }
     Command::Wait(arg_values[0].clone(), arg_values[1].clone())
+}
+
+fn create_config(args: Vec<RespType>) -> Command {
+    match &args.len() {
+        2 => (),
+        _ => panic!("Number of arguments for CONFIG GET is wrong"),
+    }
+    match turn_arg_to_string(&args[0]) {
+        Some(x) if x.as_str().to_lowercase() == "get" => (),
+        _ => panic!("Expected CONFIG to be followed by GET"),
+    };
+    let arg_value = match turn_arg_to_string(&args[1]) {
+        Some(x) => x,
+        None => panic!("Expected argument for CONFIG GET to be a string"),
+    };
+
+    Command::ConfigGet(arg_value)
 }

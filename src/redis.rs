@@ -171,6 +171,11 @@ impl Redis {
                         .await;
                         write_commands_to_process = 0;
                     }
+                    Command::ConfigGet(path_type) => {
+                        println!("Processing CONFIG GET");
+                        handle_config_get(Arc::clone(&stream), Arc::clone(&config), path_type)
+                            .await;
+                    }
                 };
             }
         });
