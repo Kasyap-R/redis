@@ -11,6 +11,7 @@ pub enum Command {
     Psync(String, String),
     Wait(i32, i32),
     ConfigGet(String),
+    Keys(String),
 }
 
 impl Command {
@@ -34,6 +35,7 @@ pub fn args_to_command(command_name: &str, args: Vec<RespType>) -> Command {
         "psync" => create_psync(args),
         "wait" => create_wait(args),
         "config" => create_config(args),
+        "keys" => create_key(args),
         other @ _ => panic!("No support for command type: {}", other),
     }
 }
@@ -191,4 +193,16 @@ fn create_config(args: Vec<RespType>) -> Command {
     };
 
     Command::ConfigGet(arg_value)
+}
+
+fn create_key(args: Vec<RespType>) -> Command {
+    match &args.len() {
+        1 => (),
+        _ => panic!("Number of arguments for KEYS is wrong"),
+    }
+    let arg_value = match turn_arg_to_string(&args[0]) {
+        Some(x) => x,
+        None => panic!("Expected argument for KEYS to be a string"),
+    };
+    Command::Keys(arg_value)
 }

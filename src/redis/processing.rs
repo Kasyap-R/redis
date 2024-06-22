@@ -9,7 +9,6 @@ use crate::resp::{
 };
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -117,6 +116,23 @@ pub async fn handle_config_get(
         RespType::BulkString(Some(path_type)),
         RespType::BulkString(Some(path)),
     ]));
+    let mut stream = stream.write().await;
+    let _ = stream.write_all(response.as_bytes()).await;
+}
+
+pub async fn handle_keys(
+    stream: Arc<RwLock<TcpStream>>,
+    db: Arc<Mutex<HashMap<String, String>>>,
+    _arg: String,
+) {
+    // NOTE: Assuming arg is always *
+    let db = db.lock().await;
+    let keys: Vec<String> = db.keys().cloned().collect();
+    let resp_keys: Vec<RespType> = keys
+        .into_iter()
+        .map(|key| RespType::BulkString(Some(key)))
+        .collect();
+    let response = serialize_resp_data(RespType::Array(resp_keys));
     let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }

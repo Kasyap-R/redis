@@ -1,11 +1,13 @@
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-pub mod config;
-pub mod redis;
-pub mod resp;
 use crate::config::*;
 use crate::redis::Redis;
+
+pub mod config;
+pub mod rdb;
+pub mod redis;
+pub mod resp;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<(dyn std::error::Error + 'static)>> {

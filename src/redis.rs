@@ -4,11 +4,14 @@ use self::replica::is_stream_replica;
 use self::synchronize::construct_rdb;
 
 use crate::config::Config;
+use crate::rdb::RdbParser;
 use crate::resp::resp_deserializer::RespParser;
 
 use core::fmt;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task;
@@ -172,9 +175,11 @@ impl Redis {
                         write_commands_to_process = 0;
                     }
                     Command::ConfigGet(path_type) => {
-                        println!("Processing CONFIG GET");
                         handle_config_get(Arc::clone(&stream), Arc::clone(&config), path_type)
                             .await;
+                    }
+                    Command::Keys(selector_arg) => {
+                        handle_keys(Arc::clone(&stream), Arc::clone(&database), selector_arg).await;
                     }
                 };
             }
@@ -212,8 +217,34 @@ impl Redis {
                 RedisState::Master => Arc::new(RwLock::new(Some(HashMap::new()))),
                 RedisState::Replica => Arc::new(RwLock::new(None)),
             };
+        let database: Arc<Mutex<HashMap<String, String>>>;
+        match (&config.rdb_dir, &config.rdb_filename) {
+            (Some(dir), Some(filename)) => {
+                // Both x and z are available here
+                let mut full_path = dir.clone();
+                full_path.push(filename);
+                match File::open(full_path).await {
+                    Ok(mut file) => {
+                        let mut contents = vec![];
+                        let _ = file.read_to_end(&mut contents).await;
+                        println!("Contents of RDB: {:?}", contents);
+                        // Here we will parse the RDB file which returns a database
+                        let mut rdb_parser = RdbParser::new(contents);
+                        let data_map = rdb_parser.rdb_to_db();
+                        database = Arc::new(Mutex::new(data_map));
+                    }
+                    Err(_) => {
+                        database = Arc::new(Mutex::new(HashMap::new()));
+                    }
+                };
+            }
+            _ => {
+                database = Arc::new(Mutex::new(HashMap::new()));
+            }
+        }
+
         Ok(Redis {
-            database: Arc::new(Mutex::new(HashMap::new())),
+            database,
             config,
             listener,
             replica_connections: connections,
