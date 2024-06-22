@@ -220,7 +220,6 @@ impl Redis {
         let database: Arc<Mutex<HashMap<String, String>>>;
         match (&config.rdb_dir, &config.rdb_filename) {
             (Some(dir), Some(filename)) => {
-                // Both x and z are available here
                 let mut full_path = dir.clone();
                 full_path.push(filename);
                 match File::open(full_path).await {
