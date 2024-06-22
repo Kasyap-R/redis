@@ -19,11 +19,15 @@ impl RdbParser {
         let len = self.data[pos];
         pos += 1;
         let key = &self.data[pos..(pos + len as usize)];
-        println!("1 {:x?}", key);
-        let pars = std::str::from_utf8(key).unwrap();
-        println!("2 {:?}", pars);
+        let key = std::str::from_utf8(key).unwrap();
+        // Parse Value
+        let mut pos = pos + len as usize;
+        let len = self.data[pos];
+        pos += 1;
+        let value = &self.data[pos..(pos + len as usize)];
+        let value = std::str::from_utf8(value).unwrap();
         let mut database: HashMap<String, String> = HashMap::new();
-        database.insert(String::from(pars), "0".to_string());
+        database.insert(String::from(key), String::from(value));
         database
     }
 }
