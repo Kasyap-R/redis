@@ -14,26 +14,37 @@ impl RdbParser {
     }
 
     pub fn rdb_to_db(&mut self) -> HashMap<String, String> {
-        let fb_pos = self.data.iter().position(|&b| b == 0xfb).unwrap();
-        let mut pos = fb_pos + 4;
-        let len = self.data[pos];
-        pos += 1;
-        let key = &self.data[pos..(pos + len as usize)];
-        let key = std::str::from_utf8(key).unwrap();
-        // Parse Value
-        let mut pos = pos + len as usize;
-        let len = self.data[pos];
-        pos += 1;
-        let value = &self.data[pos..(pos + len as usize)];
-        let value = std::str::from_utf8(value).unwrap();
+        self.parse_header();
+        self.parse_metadata();
+        // Skip over RESIZE DB Field
+        self.index += 4;
         let mut database: HashMap<String, String> = HashMap::new();
-        database.insert(String::from(key), String::from(value));
+        while self.data[self.index] != 0xfe {
+            let (key, value) = self.parse_key_value();
+            database.insert(key, value);
+        }
         database
     }
+    // Private
+    fn parse_header(&mut self) {
+        let header = &self.data[0..9];
+        println!("Header: {:?}", header);
+        self.index += 9;
+    }
+    fn parse_metadata(&mut self) {
+        let hash_start_index = self.data.iter().position(|&b| b == 0xfb).unwrap();
+        self.index = hash_start_index;
+    }
+    fn parse_key_value(&mut self) -> (String, String) {
+        let length_key = self.data[self.index];
+        self.index += 1;
+        let key = &self.data[self.index..(self.index + length_key as usize)];
+        let key = std::str::from_utf8(key).unwrap();
+        self.index += length_key as usize;
+        let length_value = self.data[self.index];
+        let value = &self.data[self.index..(self.index + length_value as usize)];
+        let value = std::str::from_utf8(value).unwrap();
+        self.index += length_value as usize;
+        (key.to_string(), value.to_string())
+    }
 }
-
-// Private
-/* fn parse_header();
-fn parse_metadata();
-fn parse();
-fn parse_key_value(); */
