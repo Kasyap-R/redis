@@ -10,6 +10,7 @@ use crate::resp::resp_deserializer::RespParser;
 use core::fmt;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -38,11 +39,11 @@ impl fmt::Display for RedisState {
 
 pub struct Redis {
     database: Arc<Mutex<HashMap<String, String>>>,
+    expiry: Arc<RwLock<HashMap<String, SystemTime>>>,
     config: Arc<Config>,
     listener: TcpListener,
     replica_connections: Arc<RwLock<Option<HashMap<i32, Arc<RwLock<TcpStream>>>>>>,
     master_connection: Option<Arc<RwLock<TcpStream>>>,
-    // Replicas must maintain their connection to master, this is they will propagate changes
 }
 
 impl Redis {
@@ -50,6 +51,7 @@ impl Redis {
         let database: Arc<Mutex<HashMap<String, String>>> = Arc::clone(&self.database);
         let config = Arc::clone(&self.config);
         let replica_connections = Arc::clone(&self.replica_connections);
+        let expiry = Arc::clone(&self.expiry);
         // Each connection should have a dedicated parser
         let mut parser = match parser {
             Some(x) => x,
@@ -103,19 +105,26 @@ impl Redis {
                     Command::Ping => {
                         handle_ping(Arc::clone(&stream), config.role).await;
                     }
-                    Command::Set(key, value, expiry) => {
+                    Command::Set(key, value, lifespan) => {
                         handle_set(
                             key,
                             value,
-                            expiry,
+                            lifespan,
                             Arc::clone(&stream),
                             Arc::clone(&database),
+                            Arc::clone(&expiry),
                             config.role,
                         )
                         .await;
                     }
                     Command::Get(key) => {
-                        handle_get(key, Arc::clone(&stream), Arc::clone(&database)).await;
+                        handle_get(
+                            key,
+                            Arc::clone(&stream),
+                            Arc::clone(&database),
+                            Arc::clone(&expiry),
+                        )
+                        .await;
                     }
                     Command::Info(arg) => {
                         handle_info(arg, Arc::clone(&config), Arc::clone(&stream)).await;
@@ -217,7 +226,10 @@ impl Redis {
                 RedisState::Master => Arc::new(RwLock::new(Some(HashMap::new()))),
                 RedisState::Replica => Arc::new(RwLock::new(None)),
             };
-        let database: Arc<Mutex<HashMap<String, String>>>;
+        let mut database: Arc<Mutex<HashMap<String, String>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let mut expiry: Arc<RwLock<HashMap<String, SystemTime>>> =
+            Arc::new(RwLock::new(HashMap::new()));
         match (&config.rdb_dir, &config.rdb_filename) {
             (Some(dir), Some(filename)) => {
                 let mut full_path = dir.clone();
@@ -226,24 +238,21 @@ impl Redis {
                     Ok(mut file) => {
                         let mut contents = vec![];
                         let _ = file.read_to_end(&mut contents).await;
-                        println!("Contents of RDB: {:?}", contents);
                         // Here we will parse the RDB file which returns a database
                         let mut rdb_parser = RdbParser::new(contents);
-                        let data_map = rdb_parser.rdb_to_db();
+                        let (data_map, expiry_map) = rdb_parser.rdb_to_db();
                         database = Arc::new(Mutex::new(data_map));
+                        expiry = Arc::new(RwLock::new(expiry_map));
                     }
-                    Err(_) => {
-                        database = Arc::new(Mutex::new(HashMap::new()));
-                    }
+                    Err(_) => (),
                 };
             }
-            _ => {
-                database = Arc::new(Mutex::new(HashMap::new()));
-            }
+            _ => (),
         }
 
         Ok(Redis {
             database,
+            expiry,
             config,
             listener,
             replica_connections: connections,

@@ -1,29 +1,37 @@
 use std::collections::HashMap;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct RdbParser {
     data: Vec<u8>,
     index: usize,
 }
 
-const EOF: u8 = 0xff;
+const EOF_FLAG: u8 = 0xff;
+const EXPIRY_MS_FLAG: u8 = 0xfc;
+const EXPIRY_S_FLAG: u8 = 0xfd;
 
-// Public
 impl RdbParser {
+    // Public
     pub fn new(data: Vec<u8>) -> Self {
         Self { data, index: 0 }
     }
 
-    pub fn rdb_to_db(&mut self) -> HashMap<String, String> {
+    pub fn rdb_to_db(&mut self) -> (HashMap<String, String>, HashMap<String, SystemTime>) {
         self.parse_header();
         self.parse_metadata();
         let mut database: HashMap<String, String> = HashMap::new();
-        while self.data[self.index] != EOF {
+        let mut expiry: HashMap<String, SystemTime> = HashMap::new();
+        while self.data[self.index] != EOF_FLAG {
             println!("Reading KEY-Value");
-            let (key, value) = self.parse_key_value();
+            let (expiration, key, value) = self.parse_key_value();
+            if let Some(x) = expiration {
+                expiry.insert(key.clone(), x);
+            }
             database.insert(key, value);
         }
-        database
+        (database, expiry)
     }
+
     // Private
     fn parse_header(&mut self) {
         let header = &self.data[0..9];
@@ -38,7 +46,9 @@ impl RdbParser {
         self.index += 3;
     }
 
-    fn parse_key_value(&mut self) -> (String, String) {
+    fn parse_key_value(&mut self) -> (Option<SystemTime>, String, String) {
+        let expiry = self.parse_expiry();
+        // Skip over Value field
         self.index += 1;
         let length_key = self.data[self.index];
         self.index += 1;
@@ -59,7 +69,30 @@ impl RdbParser {
 
         println!("Length of Value: {}", length_value);
         println!("Value: {}", value);
+        if let Some(x) = expiry {
+            println!("Expiry: {:?}", x);
+        }
 
-        (key.to_string(), value.to_string())
+        (expiry, key.to_string(), value.to_string())
+    }
+
+    fn parse_expiry(&mut self) -> Option<SystemTime> {
+        match self.data[self.index] {
+            EXPIRY_MS_FLAG => {
+                self.index += 1;
+                let bytes: [u8; 8] = self.data[self.index..self.index + 8].try_into().unwrap();
+                self.index += 8;
+                let millis = u64::from_le_bytes(bytes);
+                Some(UNIX_EPOCH + Duration::from_millis(millis))
+            }
+            EXPIRY_S_FLAG => {
+                self.index += 1;
+                let bytes: [u8; 4] = self.data[self.index..self.index + 4].try_into().unwrap();
+                self.index += 4;
+                let secs = u32::from_le_bytes(bytes) as u64;
+                Some(UNIX_EPOCH + Duration::from_secs(secs))
+            }
+            _ => None,
+        }
     }
 }

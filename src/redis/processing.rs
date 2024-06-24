@@ -10,10 +10,11 @@ use crate::resp::{
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock};
-use tokio::time::{self, sleep, Duration};
+use tokio::time::{self, Duration};
 
 pub async fn handle_echo(message: String, stream: Arc<RwLock<TcpStream>>, role: RedisState) {
     let response = serialize_resp_data(RespType::BulkString(Some(String::from(format!(
@@ -37,23 +38,25 @@ pub async fn handle_ping(stream: Arc<RwLock<TcpStream>>, role: RedisState) {
 pub async fn handle_set(
     key: String,
     value: String,
-    expiry: Option<u64>,
+    lifespan: Option<u64>,
     stream: Arc<RwLock<TcpStream>>,
     db: Arc<Mutex<HashMap<String, String>>>,
+    expiry: Arc<RwLock<HashMap<String, SystemTime>>>,
     role: RedisState,
 ) {
     {
         let mut db = db.lock().await;
         db.insert(key.clone(), value);
     }
-    if let Some(delay_millis) = expiry {
-        let key_clone = key.clone();
-        let db_clone = Arc::clone(&db);
-        tokio::spawn(async move {
-            sleep(Duration::from_millis(delay_millis)).await;
-            let mut db = db_clone.lock().await;
-            db.remove(&key_clone);
-        });
+    if let Some(delay_millis) = lifespan {
+        let mut expiry = expiry.write().await;
+        let lifespan = Duration::from_millis(delay_millis);
+        let now = SystemTime::now();
+        let future_time = now + lifespan;
+        expiry.insert(key.clone(), future_time);
+    } else {
+        let mut expiry = expiry.write().await;
+        expiry.remove(&key);
     }
     let response = serialize_resp_data(RespType::SimpleString(String::from("OK")));
     if role == RedisState::Master {
@@ -66,12 +69,22 @@ pub async fn handle_get(
     key: String,
     stream: Arc<RwLock<TcpStream>>,
     db: Arc<Mutex<HashMap<String, String>>>,
+    expiry: Arc<RwLock<HashMap<String, SystemTime>>>,
 ) {
     let db = db.lock().await;
-    let response = match db.get(&key) {
-        Some(x) => serialize_resp_data(RespType::BulkString(Some(String::from(x)))),
-        None => create_null_string(),
-    };
+    let expiry = expiry.read().await;
+    let mut response = create_null_string();
+    match db.get(&key) {
+        Some(value) => {
+            response = serialize_resp_data(RespType::BulkString(Some(String::from(value))));
+            if let Some(expiration) = expiry.get(&key) {
+                if SystemTime::now() > *expiration {
+                    response = create_null_string();
+                }
+            }
+        }
+        None => (),
+    }
     let mut stream = stream.write().await;
     let _ = stream.write_all(response.as_bytes()).await;
 }
